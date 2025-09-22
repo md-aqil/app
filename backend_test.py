@@ -11,7 +11,7 @@ import sys
 from datetime import datetime
 
 # Get base URL from environment
-BASE_URL = "https://whatsapp-checkout-1.preview.emergentagent.com/api"
+BASE_URL = "http://localhost:3000/api"
 
 class WhatsAppCommerceAPITester:
     def __init__(self):
