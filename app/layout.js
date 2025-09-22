@@ -1,15 +1,23 @@
 import './globals.css'
+import { ThemeProvider } from '@/components/theme-provider'
 
 export const metadata = {
-  title: 'Next.js MongoDB Template',
-  description: 'A simple template with App Router, MongoDB, and shadcn/ui',
+  title: 'WhatsApp Commerce Hub',
+  description: 'Connect Shopify to WhatsApp Business for seamless product catalogs and payments',
 }
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body>
-        {children}
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
+          {children}
+        </ThemeProvider>
       </body>
     </html>
   )
