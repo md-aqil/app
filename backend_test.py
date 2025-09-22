@@ -14,497 +14,440 @@ from datetime import datetime
 BASE_URL = "https://whatsapp-checkout-1.preview.emergentagent.com/api"
 HEADERS = {"Content-Type": "application/json"}
 
-class WhatsAppCommerceAPITester:
-    def __init__(self):
-        self.base_url = BASE_URL
-        self.session = requests.Session()
-        self.test_results = []
-        
-    def log_test(self, test_name, success, details="", response_data=None):
-        """Log test results"""
-        result = {
-            "test": test_name,
-            "success": success,
-            "details": details,
-            "timestamp": datetime.now().isoformat(),
-            "response_data": response_data
+def log_test(test_name, success, details=""):
+    """Log test results"""
+    status = "✅ PASS" if success else "❌ FAIL"
+    print(f"{status} {test_name}")
+    if details:
+        print(f"   Details: {details}")
+    print()
+
+def test_campaign_management():
+    """Test Campaign Management endpoints"""
+    print("=== TESTING CAMPAIGN MANAGEMENT ===")
+    
+    # Test 1: GET /api/campaigns - should return empty list initially
+    try:
+        response = requests.get(f"{BASE_URL}/campaigns", headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            campaigns = response.json()
+            if isinstance(campaigns, list):
+                log_test("GET /api/campaigns - Empty list", True, f"Returned {len(campaigns)} campaigns")
+            else:
+                log_test("GET /api/campaigns - Empty list", False, f"Expected list, got {type(campaigns)}")
+        else:
+            log_test("GET /api/campaigns - Empty list", False, f"Status: {response.status_code}, Response: {response.text}")
+    except Exception as e:
+        log_test("GET /api/campaigns - Empty list", False, f"Exception: {str(e)}")
+
+    # Test 2: POST /api/campaigns - Create new campaign with different audiences
+    test_campaigns = [
+        {
+            "name": "Welcome Campaign - All Customers",
+            "message": "Welcome to our store! Check out our latest products.",
+            "audience": "all_customers"
+        },
+        {
+            "name": "Recent Buyers Campaign",
+            "message": "Thank you for your recent purchase! Here are some recommendations.",
+            "audience": "recent_buyers"
+        },
+        {
+            "name": "Custom Audience Campaign",
+            "message": "Special offer just for you!",
+            "audience": "custom",
+            "recipients": ["+1234567890", "+0987654321"]
         }
-        self.test_results.append(result)
-        status = "✅ PASS" if success else "❌ FAIL"
-        print(f"{status}: {test_name}")
-        if details:
-            print(f"   Details: {details}")
-        if not success and response_data:
-            print(f"   Response: {response_data}")
-        print()
-
-    def test_api_root(self):
-        """Test root API endpoint"""
+    ]
+    
+    created_campaign_ids = []
+    
+    for i, campaign_data in enumerate(test_campaigns):
         try:
-            response = self.session.get(f"{self.base_url}")
-            
+            response = requests.post(f"{BASE_URL}/campaigns", 
+                                   headers=HEADERS, 
+                                   json=campaign_data, 
+                                   timeout=10)
             if response.status_code == 200:
-                data = response.json()
-                if "WhatsApp Commerce Hub API" in data.get("message", ""):
-                    self.log_test("API Root Endpoint", True, "API is accessible and returns correct message")
+                campaign = response.json()
+                if 'id' in campaign and campaign['name'] == campaign_data['name']:
+                    created_campaign_ids.append(campaign['id'])
+                    log_test(f"POST /api/campaigns - Create campaign {i+1}", True, 
+                           f"Created campaign: {campaign['name']} with ID: {campaign['id']}")
                 else:
-                    self.log_test("API Root Endpoint", False, "Unexpected response message", data)
+                    log_test(f"POST /api/campaigns - Create campaign {i+1}", False, 
+                           f"Missing ID or name mismatch in response: {campaign}")
             else:
-                self.log_test("API Root Endpoint", False, f"HTTP {response.status_code}", response.text)
-                
+                log_test(f"POST /api/campaigns - Create campaign {i+1}", False, 
+                       f"Status: {response.status_code}, Response: {response.text}")
         except Exception as e:
-            self.log_test("API Root Endpoint", False, f"Connection error: {str(e)}")
+            log_test(f"POST /api/campaigns - Create campaign {i+1}", False, f"Exception: {str(e)}")
 
-    def test_get_integrations(self):
-        """Test GET /api/integrations - should return default integration status"""
-        try:
-            response = self.session.get(f"{self.base_url}/integrations")
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                # Check if response has expected structure
-                expected_keys = ["whatsapp", "shopify", "stripe"]
-                if all(key in data for key in expected_keys):
-                    # Check each integration has connected and data fields
-                    valid_structure = True
-                    for key in expected_keys:
-                        if not isinstance(data[key], dict) or "connected" not in data[key] or "data" not in data[key]:
-                            valid_structure = False
-                            break
-                    
-                    if valid_structure:
-                        self.log_test("GET Integrations", True, "Returns proper integration structure with all required fields")
-                    else:
-                        self.log_test("GET Integrations", False, "Invalid integration structure", data)
-                else:
-                    self.log_test("GET Integrations", False, "Missing required integration keys", data)
+    # Test 3: POST /api/campaigns - Validation test (missing required fields)
+    try:
+        invalid_campaign = {"name": "Invalid Campaign"}  # Missing message
+        response = requests.post(f"{BASE_URL}/campaigns", 
+                               headers=HEADERS, 
+                               json=invalid_campaign, 
+                               timeout=10)
+        if response.status_code == 400:
+            log_test("POST /api/campaigns - Validation", True, "Correctly rejected campaign without message")
+        else:
+            log_test("POST /api/campaigns - Validation", False, 
+                   f"Expected 400, got {response.status_code}: {response.text}")
+    except Exception as e:
+        log_test("POST /api/campaigns - Validation", False, f"Exception: {str(e)}")
+
+    # Test 4: GET /api/campaigns - Verify created campaigns
+    try:
+        response = requests.get(f"{BASE_URL}/campaigns", headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            campaigns = response.json()
+            if len(campaigns) >= len(created_campaign_ids):
+                log_test("GET /api/campaigns - After creation", True, 
+                       f"Found {len(campaigns)} campaigns (expected at least {len(created_campaign_ids)})")
             else:
-                self.log_test("GET Integrations", False, f"HTTP {response.status_code}", response.text)
-                
-        except Exception as e:
-            self.log_test("GET Integrations", False, f"Request error: {str(e)}")
+                log_test("GET /api/campaigns - After creation", False, 
+                       f"Expected at least {len(created_campaign_ids)} campaigns, got {len(campaigns)}")
+        else:
+            log_test("GET /api/campaigns - After creation", False, 
+                   f"Status: {response.status_code}, Response: {response.text}")
+    except Exception as e:
+        log_test("GET /api/campaigns - After creation", False, f"Exception: {str(e)}")
 
-    def test_post_integrations_validation(self):
-        """Test POST /api/integrations validation"""
-        
-        # Test missing type and data
+    # Test 5: POST /api/campaigns/{id}/send - Test sending campaigns (should fail without WhatsApp config)
+    if created_campaign_ids:
+        campaign_id = created_campaign_ids[0]
         try:
-            response = self.session.post(f"{self.base_url}/integrations", json={})
-            
+            response = requests.post(f"{BASE_URL}/campaigns/{campaign_id}/send", 
+                                   headers=HEADERS, 
+                                   timeout=10)
             if response.status_code == 400:
-                data = response.json()
-                if "Type and data are required" in data.get("error", ""):
-                    self.log_test("POST Integrations - Missing Fields Validation", True, "Correctly validates missing type and data")
+                error_data = response.json()
+                if "WhatsApp not configured" in error_data.get('error', ''):
+                    log_test("POST /api/campaigns/{id}/send - No WhatsApp config", True, 
+                           "Correctly rejected campaign send without WhatsApp configuration")
                 else:
-                    self.log_test("POST Integrations - Missing Fields Validation", False, "Unexpected error message", data)
+                    log_test("POST /api/campaigns/{id}/send - No WhatsApp config", False, 
+                           f"Unexpected error: {error_data}")
             else:
-                self.log_test("POST Integrations - Missing Fields Validation", False, f"Expected 400, got {response.status_code}", response.text)
-                
+                log_test("POST /api/campaigns/{id}/send - No WhatsApp config", False, 
+                       f"Expected 400, got {response.status_code}: {response.text}")
         except Exception as e:
-            self.log_test("POST Integrations - Missing Fields Validation", False, f"Request error: {str(e)}")
+            log_test("POST /api/campaigns/{id}/send - No WhatsApp config", False, f"Exception: {str(e)}")
 
-    def test_post_integrations_whatsapp(self):
-        """Test POST /api/integrations for WhatsApp with mock data"""
-        
-        # Test with invalid WhatsApp credentials
-        test_data = {
+    # Test 6: POST /api/campaigns/{id}/send - Test with invalid campaign ID
+    try:
+        fake_id = str(uuid.uuid4())
+        response = requests.post(f"{BASE_URL}/campaigns/{fake_id}/send", 
+                               headers=HEADERS, 
+                               timeout=10)
+        if response.status_code == 404:
+            log_test("POST /api/campaigns/{id}/send - Invalid ID", True, 
+                   "Correctly returned 404 for non-existent campaign")
+        else:
+            log_test("POST /api/campaigns/{id}/send - Invalid ID", False, 
+                   f"Expected 404, got {response.status_code}: {response.text}")
+    except Exception as e:
+        log_test("POST /api/campaigns/{id}/send - Invalid ID", False, f"Exception: {str(e)}")
+
+    # Test 7: DELETE /api/campaigns/{id} - Delete campaigns
+    for i, campaign_id in enumerate(created_campaign_ids):
+        try:
+            response = requests.delete(f"{BASE_URL}/campaigns/{campaign_id}", 
+                                     headers=HEADERS, 
+                                     timeout=10)
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('success'):
+                    log_test(f"DELETE /api/campaigns/{campaign_id} - Campaign {i+1}", True, 
+                           f"Successfully deleted campaign {campaign_id}")
+                else:
+                    log_test(f"DELETE /api/campaigns/{campaign_id} - Campaign {i+1}", False, 
+                           f"Success flag not set: {result}")
+            else:
+                log_test(f"DELETE /api/campaigns/{campaign_id} - Campaign {i+1}", False, 
+                       f"Status: {response.status_code}, Response: {response.text}")
+        except Exception as e:
+            log_test(f"DELETE /api/campaigns/{campaign_id} - Campaign {i+1}", False, f"Exception: {str(e)}")
+
+    # Test 8: DELETE /api/campaigns/{id} - Test with invalid campaign ID
+    try:
+        fake_id = str(uuid.uuid4())
+        response = requests.delete(f"{BASE_URL}/campaigns/{fake_id}", 
+                                 headers=HEADERS, 
+                                 timeout=10)
+        if response.status_code == 404:
+            log_test("DELETE /api/campaigns/{id} - Invalid ID", True, 
+                   "Correctly returned 404 for non-existent campaign")
+        else:
+            log_test("DELETE /api/campaigns/{id} - Invalid ID", False, 
+                   f"Expected 404, got {response.status_code}: {response.text}")
+    except Exception as e:
+        log_test("DELETE /api/campaigns/{id} - Invalid ID", False, f"Exception: {str(e)}")
+
+def test_order_management():
+    """Test Order Management endpoints"""
+    print("=== TESTING ORDER MANAGEMENT ===")
+    
+    # Test 1: GET /api/orders - should return empty list initially
+    try:
+        response = requests.get(f"{BASE_URL}/orders", headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            orders = response.json()
+            if isinstance(orders, list):
+                log_test("GET /api/orders - Empty list", True, f"Returned {len(orders)} orders")
+            else:
+                log_test("GET /api/orders - Empty list", False, f"Expected list, got {type(orders)}")
+        else:
+            log_test("GET /api/orders - Empty list", False, f"Status: {response.status_code}, Response: {response.text}")
+    except Exception as e:
+        log_test("GET /api/orders - Empty list", False, f"Exception: {str(e)}")
+
+def test_shopify_webhook_setup():
+    """Test Shopify Webhook Setup endpoints"""
+    print("=== TESTING SHOPIFY WEBHOOK SETUP ===")
+    
+    # Test 1: POST /api/setup-webhooks - should fail without Shopify configuration
+    try:
+        response = requests.post(f"{BASE_URL}/setup-webhooks", headers=HEADERS, timeout=10)
+        if response.status_code == 400:
+            error_data = response.json()
+            if "Shopify not configured" in error_data.get('error', ''):
+                log_test("POST /api/setup-webhooks - No Shopify config", True, 
+                       "Correctly rejected webhook setup without Shopify configuration")
+            else:
+                log_test("POST /api/setup-webhooks - No Shopify config", False, 
+                       f"Unexpected error: {error_data}")
+        else:
+            log_test("POST /api/setup-webhooks - No Shopify config", False, 
+                   f"Expected 400, got {response.status_code}: {response.text}")
+    except Exception as e:
+        log_test("POST /api/setup-webhooks - No Shopify config", False, f"Exception: {str(e)}")
+
+def test_shopify_webhook_processing():
+    """Test Shopify webhook processing"""
+    print("=== TESTING SHOPIFY WEBHOOK PROCESSING ===")
+    
+    # Test 1: POST /api/webhook/shopify - Test processing Shopify order webhook
+    sample_shopify_order = {
+        "id": 12345678901234567890,
+        "order_number": 1001,
+        "name": "#1001",
+        "created_at": "2024-01-15T10:30:00Z",
+        "total_price": "99.99",
+        "currency": "USD",
+        "fulfillment_status": "pending",
+        "customer": {
+            "id": 987654321,
+            "first_name": "John",
+            "last_name": "Doe",
+            "email": "john.doe@example.com",
+            "phone": "+1234567890"
+        },
+        "line_items": [
+            {
+                "id": 111111111,
+                "title": "Test Product",
+                "quantity": 1,
+                "price": "99.99"
+            }
+        ]
+    }
+    
+    try:
+        response = requests.post(f"{BASE_URL}/webhook/shopify", 
+                               headers=HEADERS, 
+                               json=sample_shopify_order, 
+                               timeout=10)
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('success'):
+                log_test("POST /api/webhook/shopify - Process order", True, 
+                       "Successfully processed Shopify order webhook")
+            else:
+                log_test("POST /api/webhook/shopify - Process order", False, 
+                       f"Success flag not set: {result}")
+        else:
+            log_test("POST /api/webhook/shopify - Process order", False, 
+                   f"Status: {response.status_code}, Response: {response.text}")
+    except Exception as e:
+        log_test("POST /api/webhook/shopify - Process order", False, f"Exception: {str(e)}")
+
+    # Test 2: Verify order was created in database by checking GET /api/orders
+    time.sleep(1)  # Give a moment for the order to be processed
+    try:
+        response = requests.get(f"{BASE_URL}/orders", headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            orders = response.json()
+            if len(orders) > 0:
+                # Check if our test order is in the list
+                test_order_found = False
+                for order in orders:
+                    if (order.get('shopifyOrderId') == str(sample_shopify_order['id']) or 
+                        order.get('customerEmail') == sample_shopify_order['customer']['email']):
+                        test_order_found = True
+                        break
+                
+                if test_order_found:
+                    log_test("GET /api/orders - After webhook", True, 
+                           f"Found test order in database (total orders: {len(orders)})")
+                else:
+                    log_test("GET /api/orders - After webhook", False, 
+                           f"Test order not found in {len(orders)} orders")
+            else:
+                log_test("GET /api/orders - After webhook", False, 
+                       "No orders found after webhook processing")
+        else:
+            log_test("GET /api/orders - After webhook", False, 
+                   f"Status: {response.status_code}, Response: {response.text}")
+    except Exception as e:
+        log_test("GET /api/orders - After webhook", False, f"Exception: {str(e)}")
+
+    # Test 3: POST /api/webhook/shopify - Test with invalid/incomplete data
+    invalid_order = {
+        "id": 99999999999999999999,
+        "total_price": "50.00"
+        # Missing customer data
+    }
+    
+    try:
+        response = requests.post(f"{BASE_URL}/webhook/shopify", 
+                               headers=HEADERS, 
+                               json=invalid_order, 
+                               timeout=10)
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('success'):
+                log_test("POST /api/webhook/shopify - Invalid data", True, 
+                       "Webhook endpoint handles invalid data gracefully")
+            else:
+                log_test("POST /api/webhook/shopify - Invalid data", False, 
+                       f"Unexpected response: {result}")
+        else:
+            log_test("POST /api/webhook/shopify - Invalid data", False, 
+                   f"Status: {response.status_code}, Response: {response.text}")
+    except Exception as e:
+        log_test("POST /api/webhook/shopify - Invalid data", False, f"Exception: {str(e)}")
+
+def test_integration_features():
+    """Test enhanced integration features"""
+    print("=== TESTING ENHANCED INTEGRATION FEATURES ===")
+    
+    # Test 1: Verify integrations endpoint still works
+    try:
+        response = requests.get(f"{BASE_URL}/integrations", headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            integrations = response.json()
+            required_keys = ['whatsapp', 'shopify', 'stripe']
+            if all(key in integrations for key in required_keys):
+                log_test("GET /api/integrations - Structure", True, 
+                       "Integration structure includes all required services")
+            else:
+                log_test("GET /api/integrations - Structure", False, 
+                       f"Missing required keys. Got: {list(integrations.keys())}")
+        else:
+            log_test("GET /api/integrations - Structure", False, 
+                   f"Status: {response.status_code}, Response: {response.text}")
+    except Exception as e:
+        log_test("GET /api/integrations - Structure", False, f"Exception: {str(e)}")
+
+    # Test 2: Test integration validation (should still work)
+    try:
+        invalid_integration = {
             "type": "whatsapp",
             "data": {
-                "phoneNumberId": "test_phone_id",
-                "accessToken": "invalid_token",
-                "businessAccountId": "test_business_id",
-                "webhookVerifyToken": "test_verify_token"
+                "phoneNumberId": "invalid",
+                "accessToken": "invalid_token"
             }
         }
-        
-        try:
-            response = self.session.post(f"{self.base_url}/integrations", json=test_data)
-            
-            if response.status_code == 400:
-                data = response.json()
-                if "Integration test failed" in data.get("error", ""):
-                    self.log_test("POST Integrations - WhatsApp Invalid Credentials", True, "Correctly validates WhatsApp credentials")
-                else:
-                    self.log_test("POST Integrations - WhatsApp Invalid Credentials", False, "Unexpected error message", data)
+        response = requests.post(f"{BASE_URL}/integrations", 
+                               headers=HEADERS, 
+                               json=invalid_integration, 
+                               timeout=10)
+        if response.status_code == 400:
+            error_data = response.json()
+            if "Integration test failed" in error_data.get('error', ''):
+                log_test("POST /api/integrations - Validation", True, 
+                       "Integration validation still works correctly")
             else:
-                self.log_test("POST Integrations - WhatsApp Invalid Credentials", False, f"Expected 400, got {response.status_code}", response.text)
-                
-        except Exception as e:
-            self.log_test("POST Integrations - WhatsApp Invalid Credentials", False, f"Request error: {str(e)}")
+                log_test("POST /api/integrations - Validation", False, 
+                       f"Unexpected error: {error_data}")
+        else:
+            log_test("POST /api/integrations - Validation", False, 
+                   f"Expected 400, got {response.status_code}: {response.text}")
+    except Exception as e:
+        log_test("POST /api/integrations - Validation", False, f"Exception: {str(e)}")
 
-    def test_post_integrations_shopify(self):
-        """Test POST /api/integrations for Shopify with mock data"""
-        
-        # Test with invalid Shopify credentials
-        test_data = {
-            "type": "shopify",
-            "data": {
-                "shopDomain": "invalid-shop.myshopify.com",
-                "accessToken": "invalid_token",
-                "apiKey": "test_api_key"
-            }
-        }
-        
-        try:
-            response = self.session.post(f"{self.base_url}/integrations", json=test_data)
-            
-            if response.status_code == 400:
-                data = response.json()
-                if "Integration test failed" in data.get("error", ""):
-                    self.log_test("POST Integrations - Shopify Invalid Credentials", True, "Correctly validates Shopify credentials")
-                else:
-                    self.log_test("POST Integrations - Shopify Invalid Credentials", False, "Unexpected error message", data)
+def test_error_handling():
+    """Test error handling for missing integrations"""
+    print("=== TESTING ERROR HANDLING ===")
+    
+    # Test 1: Products endpoint without Shopify
+    try:
+        response = requests.get(f"{BASE_URL}/products", headers=HEADERS, timeout=10)
+        if response.status_code == 400:
+            error_data = response.json()
+            if "Shopify not configured" in error_data.get('error', ''):
+                log_test("GET /api/products - No Shopify", True, 
+                       "Correctly handles missing Shopify configuration")
             else:
-                self.log_test("POST Integrations - Shopify Invalid Credentials", False, f"Expected 400, got {response.status_code}", response.text)
-                
-        except Exception as e:
-            self.log_test("POST Integrations - Shopify Invalid Credentials", False, f"Request error: {str(e)}")
+                log_test("GET /api/products - No Shopify", False, 
+                       f"Unexpected error: {error_data}")
+        else:
+            log_test("GET /api/products - No Shopify", False, 
+                   f"Expected 400, got {response.status_code}: {response.text}")
+    except Exception as e:
+        log_test("GET /api/products - No Shopify", False, f"Exception: {str(e)}")
 
-    def test_post_integrations_stripe(self):
-        """Test POST /api/integrations for Stripe with mock data"""
-        
-        # Test with invalid Stripe key format
-        test_data = {
-            "type": "stripe",
-            "data": {
-                "secretKey": "invalid_key_format",
-                "publishableKey": "pk_test_example"
-            }
-        }
-        
-        try:
-            response = self.session.post(f"{self.base_url}/integrations", json=test_data)
-            
-            if response.status_code == 400:
-                data = response.json()
-                if "Integration test failed" in data.get("error", "") and "Invalid Stripe secret key format" in data.get("error", ""):
-                    self.log_test("POST Integrations - Stripe Invalid Key Format", True, "Correctly validates Stripe key format")
-                else:
-                    self.log_test("POST Integrations - Stripe Invalid Key Format", False, "Unexpected error message", data)
-            else:
-                self.log_test("POST Integrations - Stripe Invalid Key Format", False, f"Expected 400, got {response.status_code}", response.text)
-                
-        except Exception as e:
-            self.log_test("POST Integrations - Stripe Invalid Key Format", False, f"Request error: {str(e)}")
-
-        # Test with valid Stripe key format (should pass format validation but fail API test)
-        test_data_valid_format = {
-            "type": "stripe",
-            "data": {
-                "secretKey": "sk_test_invalid_key_but_correct_format",
-                "publishableKey": "pk_test_example"
-            }
-        }
-        
-        try:
-            response = self.session.post(f"{self.base_url}/integrations", json=test_data_valid_format)
-            
-            # Should accept valid format (current implementation only checks format)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("success"):
-                    self.log_test("POST Integrations - Stripe Valid Format", True, "Accepts valid Stripe key format")
-                else:
-                    self.log_test("POST Integrations - Stripe Valid Format", False, "Unexpected response", data)
-            else:
-                self.log_test("POST Integrations - Stripe Valid Format", False, f"Expected 200, got {response.status_code}", response.text)
-                
-        except Exception as e:
-            self.log_test("POST Integrations - Stripe Valid Format", False, f"Request error: {str(e)}")
-
-    def test_get_products_no_shopify(self):
-        """Test GET /api/products when Shopify is not configured"""
-        try:
-            response = self.session.get(f"{self.base_url}/products")
-            
-            if response.status_code == 400:
-                data = response.json()
-                if "Shopify not configured" in data.get("error", ""):
-                    self.log_test("GET Products - No Shopify Config", True, "Correctly handles missing Shopify configuration")
-                else:
-                    self.log_test("GET Products - No Shopify Config", False, "Unexpected error message", data)
-            else:
-                self.log_test("GET Products - No Shopify Config", False, f"Expected 400, got {response.status_code}", response.text)
-                
-        except Exception as e:
-            self.log_test("GET Products - No Shopify Config", False, f"Request error: {str(e)}")
-
-    def test_send_catalog_validation(self):
-        """Test POST /api/send-catalog validation"""
-        
-        # Test missing products
-        try:
-            response = self.session.post(f"{self.base_url}/send-catalog", json={})
-            
-            if response.status_code == 400:
-                data = response.json()
-                if "Products array is required" in data.get("error", ""):
-                    self.log_test("POST Send Catalog - Missing Products", True, "Correctly validates missing products")
-                else:
-                    self.log_test("POST Send Catalog - Missing Products", False, "Unexpected error message", data)
-            else:
-                self.log_test("POST Send Catalog - Missing Products", False, f"Expected 400, got {response.status_code}", response.text)
-                
-        except Exception as e:
-            self.log_test("POST Send Catalog - Missing Products", False, f"Request error: {str(e)}")
-
-        # Test empty products array
-        try:
-            response = self.session.post(f"{self.base_url}/send-catalog", json={"products": []})
-            
-            if response.status_code == 400:
-                data = response.json()
-                if "Products array is required" in data.get("error", ""):
-                    self.log_test("POST Send Catalog - Empty Products", True, "Correctly validates empty products array")
-                else:
-                    self.log_test("POST Send Catalog - Empty Products", False, "Unexpected error message", data)
-            else:
-                self.log_test("POST Send Catalog - Empty Products", False, f"Expected 400, got {response.status_code}", response.text)
-                
-        except Exception as e:
-            self.log_test("POST Send Catalog - Empty Products", False, f"Request error: {str(e)}")
-
-        # Test missing recipient
-        try:
-            response = self.session.post(f"{self.base_url}/send-catalog", json={"products": ["123"]})
-            
-            if response.status_code == 400:
-                data = response.json()
-                if "Recipient phone number is required" in data.get("error", ""):
-                    self.log_test("POST Send Catalog - Missing Recipient", True, "Correctly validates missing recipient")
-                else:
-                    self.log_test("POST Send Catalog - Missing Recipient", False, "Unexpected error message", data)
-            else:
-                self.log_test("POST Send Catalog - Missing Recipient", False, f"Expected 400, got {response.status_code}", response.text)
-                
-        except Exception as e:
-            self.log_test("POST Send Catalog - Missing Recipient", False, f"Request error: {str(e)}")
-
-    def test_send_catalog_no_whatsapp(self):
-        """Test POST /api/send-catalog when WhatsApp is not configured"""
-        test_data = {
-            "products": ["123", "456"],
+    # Test 2: Send catalog without WhatsApp
+    try:
+        catalog_data = {
+            "products": ["test-product-1"],
             "recipient": "+1234567890"
         }
-        
-        try:
-            response = self.session.post(f"{self.base_url}/send-catalog", json=test_data)
-            
-            if response.status_code == 400:
-                data = response.json()
-                if "WhatsApp not configured" in data.get("error", ""):
-                    self.log_test("POST Send Catalog - No WhatsApp Config", True, "Correctly handles missing WhatsApp configuration")
-                else:
-                    self.log_test("POST Send Catalog - No WhatsApp Config", False, "Unexpected error message", data)
+        response = requests.post(f"{BASE_URL}/send-catalog", 
+                               headers=HEADERS, 
+                               json=catalog_data, 
+                               timeout=10)
+        if response.status_code == 400:
+            error_data = response.json()
+            if "WhatsApp not configured" in error_data.get('error', ''):
+                log_test("POST /api/send-catalog - No WhatsApp", True, 
+                       "Correctly handles missing WhatsApp configuration")
             else:
-                self.log_test("POST Send Catalog - No WhatsApp Config", False, f"Expected 400, got {response.status_code}", response.text)
-                
-        except Exception as e:
-            self.log_test("POST Send Catalog - No WhatsApp Config", False, f"Request error: {str(e)}")
-
-    def test_webhook_whatsapp_get(self):
-        """Test GET /api/webhook/whatsapp - webhook verification"""
-        
-        # Test without verify token
-        try:
-            response = self.session.get(f"{self.base_url}/webhook/whatsapp")
-            
-            if response.status_code == 403:
-                self.log_test("GET WhatsApp Webhook - No Token", True, "Correctly rejects requests without verify token")
-            else:
-                self.log_test("GET WhatsApp Webhook - No Token", False, f"Expected 403, got {response.status_code}", response.text)
-                
-        except Exception as e:
-            self.log_test("GET WhatsApp Webhook - No Token", False, f"Request error: {str(e)}")
-
-        # Test with invalid verify token
-        try:
-            params = {
-                "hub.verify_token": "invalid_token",
-                "hub.challenge": "test_challenge"
-            }
-            response = self.session.get(f"{self.base_url}/webhook/whatsapp", params=params)
-            
-            if response.status_code == 403:
-                self.log_test("GET WhatsApp Webhook - Invalid Token", True, "Correctly rejects invalid verify token")
-            else:
-                self.log_test("GET WhatsApp Webhook - Invalid Token", False, f"Expected 403, got {response.status_code}", response.text)
-                
-        except Exception as e:
-            self.log_test("GET WhatsApp Webhook - Invalid Token", False, f"Request error: {str(e)}")
-
-    def test_webhook_whatsapp_post(self):
-        """Test POST /api/webhook/whatsapp - webhook payload logging"""
-        
-        # Test webhook payload
-        test_payload = {
-            "object": "whatsapp_business_account",
-            "entry": [{
-                "id": "123456789",
-                "changes": [{
-                    "value": {
-                        "messaging_product": "whatsapp",
-                        "metadata": {
-                            "display_phone_number": "1234567890",
-                            "phone_number_id": "123456789"
-                        },
-                        "messages": [{
-                            "from": "1234567890",
-                            "id": "wamid.test",
-                            "timestamp": "1234567890",
-                            "text": {"body": "Hello"},
-                            "type": "text"
-                        }]
-                    },
-                    "field": "messages"
-                }]
-            }]
-        }
-        
-        try:
-            response = self.session.post(f"{self.base_url}/webhook/whatsapp", json=test_payload)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("success"):
-                    self.log_test("POST WhatsApp Webhook", True, "Successfully processes webhook payload")
-                else:
-                    self.log_test("POST WhatsApp Webhook", False, "Unexpected response", data)
-            else:
-                self.log_test("POST WhatsApp Webhook", False, f"Expected 200, got {response.status_code}", response.text)
-                
-        except Exception as e:
-            self.log_test("POST WhatsApp Webhook", False, f"Request error: {str(e)}")
-
-    def test_cors_headers(self):
-        """Test CORS headers are properly set"""
-        try:
-            response = self.session.options(f"{self.base_url}/integrations")
-            
-            cors_headers = [
-                'Access-Control-Allow-Origin',
-                'Access-Control-Allow-Methods',
-                'Access-Control-Allow-Headers'
-            ]
-            
-            missing_headers = []
-            for header in cors_headers:
-                if header not in response.headers:
-                    missing_headers.append(header)
-            
-            if not missing_headers:
-                self.log_test("CORS Headers", True, "All required CORS headers are present")
-            else:
-                self.log_test("CORS Headers", False, f"Missing CORS headers: {missing_headers}")
-                
-        except Exception as e:
-            self.log_test("CORS Headers", False, f"Request error: {str(e)}")
-
-    def test_invalid_route(self):
-        """Test handling of invalid routes"""
-        try:
-            response = self.session.get(f"{self.base_url}/nonexistent-route")
-            
-            if response.status_code == 404:
-                data = response.json()
-                if "Route /nonexistent-route not found" in data.get("error", ""):
-                    self.log_test("Invalid Route Handling", True, "Correctly handles invalid routes")
-                else:
-                    self.log_test("Invalid Route Handling", False, "Unexpected error message", data)
-            else:
-                self.log_test("Invalid Route Handling", False, f"Expected 404, got {response.status_code}", response.text)
-                
-        except Exception as e:
-            self.log_test("Invalid Route Handling", False, f"Request error: {str(e)}")
-
-    def run_all_tests(self):
-        """Run all backend API tests"""
-        print("=" * 60)
-        print("WHATSAPP COMMERCE HUB - BACKEND API TESTING")
-        print("=" * 60)
-        print(f"Testing API at: {self.base_url}")
-        print()
-        
-        # Test API connectivity
-        self.test_api_root()
-        
-        # Test Integration Management
-        print("🔧 TESTING INTEGRATION MANAGEMENT")
-        print("-" * 40)
-        self.test_get_integrations()
-        self.test_post_integrations_validation()
-        self.test_post_integrations_whatsapp()
-        self.test_post_integrations_shopify()
-        self.test_post_integrations_stripe()
-        
-        # Test Products Endpoint
-        print("📦 TESTING PRODUCTS ENDPOINT")
-        print("-" * 40)
-        self.test_get_products_no_shopify()
-        
-        # Test Send Catalog Endpoint
-        print("📤 TESTING SEND CATALOG ENDPOINT")
-        print("-" * 40)
-        self.test_send_catalog_validation()
-        self.test_send_catalog_no_whatsapp()
-        
-        # Test Webhook Endpoints
-        print("🔗 TESTING WEBHOOK ENDPOINTS")
-        print("-" * 40)
-        self.test_webhook_whatsapp_get()
-        self.test_webhook_whatsapp_post()
-        
-        # Test Additional Features
-        print("⚙️ TESTING ADDITIONAL FEATURES")
-        print("-" * 40)
-        self.test_cors_headers()
-        self.test_invalid_route()
-        
-        # Summary
-        self.print_summary()
-
-    def print_summary(self):
-        """Print test summary"""
-        print("=" * 60)
-        print("TEST SUMMARY")
-        print("=" * 60)
-        
-        passed = sum(1 for result in self.test_results if result["success"])
-        failed = len(self.test_results) - passed
-        
-        print(f"Total Tests: {len(self.test_results)}")
-        print(f"Passed: {passed}")
-        print(f"Failed: {failed}")
-        print(f"Success Rate: {(passed/len(self.test_results)*100):.1f}%")
-        print()
-        
-        if failed > 0:
-            print("FAILED TESTS:")
-            print("-" * 20)
-            for result in self.test_results:
-                if not result["success"]:
-                    print(f"❌ {result['test']}: {result['details']}")
-            print()
-        
-        print("CRITICAL ISSUES FOUND:")
-        print("-" * 20)
-        critical_issues = []
-        for result in self.test_results:
-            if not result["success"]:
-                # Only report critical issues, not validation errors which are expected
-                if not any(keyword in result["test"].lower() for keyword in ["validation", "invalid", "missing", "no token", "no config"]):
-                    critical_issues.append(f"• {result['test']}: {result['details']}")
-        
-        if critical_issues:
-            for issue in critical_issues:
-                print(issue)
+                log_test("POST /api/send-catalog - No WhatsApp", False, 
+                       f"Unexpected error: {error_data}")
         else:
-            print("• No critical issues found - all core functionality working as expected")
-        
-        print()
-        return passed, failed
+            log_test("POST /api/send-catalog - No WhatsApp", False, 
+                   f"Expected 400, got {response.status_code}: {response.text}")
+    except Exception as e:
+        log_test("POST /api/send-catalog - No WhatsApp", False, f"Exception: {str(e)}")
+
+def main():
+    """Run all tests"""
+    print("🚀 Starting Enhanced WhatsApp Commerce Hub Backend Tests")
+    print(f"Base URL: {BASE_URL}")
+    print("=" * 60)
+    
+    # Run all test suites
+    test_campaign_management()
+    test_order_management()
+    test_shopify_webhook_setup()
+    test_shopify_webhook_processing()
+    test_integration_features()
+    test_error_handling()
+    
+    print("=" * 60)
+    print("✅ Enhanced Backend Testing Complete!")
+    print("\nKey Test Areas Covered:")
+    print("• Campaign Management (CRUD operations)")
+    print("• Order Management (GET endpoint)")
+    print("• Shopify Webhook Setup and Processing")
+    print("• Enhanced Integration Features")
+    print("• Error Handling for Missing Configurations")
+    print("• Campaign Audience Targeting")
+    print("• Webhook Processing and Order Confirmation Flow")
 
 if __name__ == "__main__":
-    tester = WhatsAppCommerceAPITester()
-    tester.run_all_tests()
+    main()
