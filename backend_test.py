@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-Backend API Testing for WhatsApp Commerce Hub
-Tests all API endpoints including integrations, products, send-catalog, and webhooks
+Enhanced WhatsApp Commerce Hub Backend API Tests
+Testing campaign management, order management, and webhook functionality
 """
 
 import requests
 import json
-import os
-import sys
+import uuid
+import time
 from datetime import datetime
 
-# Get base URL from environment
-BASE_URL = "http://localhost:3000/api"
+# Configuration
+BASE_URL = "https://whatsapp-checkout-1.preview.emergentagent.com/api"
+HEADERS = {"Content-Type": "application/json"}
 
 class WhatsAppCommerceAPITester:
     def __init__(self):
