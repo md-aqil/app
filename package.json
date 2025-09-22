@@ -1,5 +1,5 @@
 {
-    "name": "nextjs-mongo-template",
+    "name": "whatsapp-commerce-hub",
     "version": "0.1.0",
     "private": true,
     "scripts": {
@@ -61,7 +61,8 @@
         "tailwindcss-animate": "^1.0.7",
         "uuid": "^9.0.1",
         "vaul": "^1.1.2",
-        "zod": "^3.25.67"
+        "zod": "^3.25.67",
+        "stripe": "^16.7.0"
     },
     "devDependencies": {
         "autoprefixer": "^10.4.19",
