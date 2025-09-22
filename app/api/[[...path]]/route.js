@@ -76,6 +76,32 @@ async function fetchShopifyProducts(shopDomain, accessToken) {
   }))
 }
 
+async function createShopifyWebhook(shopDomain, accessToken, topic, webhookUrl) {
+  const url = `https://${shopDomain}/admin/api/2023-10/webhooks.json`
+  
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'X-Shopify-Access-Token': accessToken,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      webhook: {
+        topic: topic,
+        address: webhookUrl,
+        format: 'json'
+      }
+    })
+  })
+
+  const data = await response.json()
+  if (!response.ok) {
+    throw new Error(data.errors || 'Shopify webhook creation error')
+  }
+  
+  return data.webhook
+}
+
 // Stripe functions
 async function createStripeCheckoutSession(lineItems, metadata) {
   // This would integrate with Stripe API
@@ -87,6 +113,80 @@ async function createStripeCheckoutSession(lineItems, metadata) {
     id: sessionId,
     url: checkoutUrl
   }
+}
+
+// Campaign functions
+async function sendCampaignToRecipients(campaign, integrations, db) {
+  const { whatsapp } = integrations
+  let recipients = []
+  
+  // Determine recipients based on audience
+  if (campaign.audience === 'all_customers') {
+    // Get all customers from orders
+    const orders = await db.collection('orders').find({ userId: 'default' }).toArray()
+    recipients = [...new Set(orders.map(order => order.customerPhone).filter(phone => phone))]
+  } else if (campaign.audience === 'recent_buyers') {
+    // Get customers from last 30 days
+    const thirtyDaysAgo = new Date()
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
+    
+    const orders = await db.collection('orders').find({ 
+      userId: 'default',
+      createdAt: { $gte: thirtyDaysAgo }
+    }).toArray()
+    recipients = [...new Set(orders.map(order => order.customerPhone).filter(phone => phone))]
+  } else if (campaign.audience === 'custom') {
+    recipients = campaign.recipients || []
+  }
+
+  // Send messages to all recipients
+  const results = []
+  for (const recipient of recipients) {
+    try {
+      const messageData = {
+        messaging_product: "whatsapp",
+        to: recipient.replace(/\D/g, ''),
+        type: "text",
+        text: {
+          body: campaign.message
+        }
+      }
+
+      const result = await sendWhatsAppMessage(
+        whatsapp.phoneNumberId,
+        whatsapp.accessToken,
+        recipient,
+        messageData
+      )
+
+      results.push({
+        recipient,
+        success: true,
+        messageId: result.messages?.[0]?.id
+      })
+
+      // Log the message
+      await db.collection('messages').insertOne({
+        id: uuidv4(),
+        userId: 'default',
+        campaignId: campaign.id,
+        recipient,
+        message: campaign.message,
+        whatsappMessageId: result.messages?.[0]?.id,
+        status: 'sent',
+        sentAt: new Date()
+      })
+
+    } catch (error) {
+      results.push({
+        recipient,
+        success: false,
+        error: error.message
+      })
+    }
+  }
+
+  return results
 }
 
 // Route handler function
@@ -193,6 +293,54 @@ async function handleRoute(request, { params }) {
       return handleCORS(NextResponse.json({ success: true }))
     }
 
+    // Setup webhooks endpoint
+    if (route === '/setup-webhooks' && method === 'POST') {
+      const integrations = await db.collection('integrations').findOne({ userId: 'default' })
+      
+      if (!integrations?.shopify?.shopDomain || !integrations?.shopify?.accessToken) {
+        return handleCORS(NextResponse.json(
+          { error: "Shopify not configured" }, 
+          { status: 400 }
+        ))
+      }
+
+      try {
+        const webhookUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/api/webhook/shopify`
+        
+        // Create webhook for order creation
+        const webhook = await createShopifyWebhook(
+          integrations.shopify.shopDomain,
+          integrations.shopify.accessToken,
+          'orders/create',
+          webhookUrl
+        )
+
+        // Save webhook info
+        await db.collection('webhooks').updateOne(
+          { userId: 'default', type: 'shopify' },
+          { 
+            $set: { 
+              webhookId: webhook.id,
+              topic: 'orders/create',
+              address: webhookUrl,
+              createdAt: new Date()
+            }
+          },
+          { upsert: true }
+        )
+
+        return handleCORS(NextResponse.json({ 
+          success: true, 
+          webhookId: webhook.id 
+        }))
+      } catch (error) {
+        return handleCORS(NextResponse.json(
+          { error: `Failed to setup webhook: ${error.message}` }, 
+          { status: 400 }
+        ))
+      }
+    }
+
     // Products endpoint
     if (route === '/products' && method === 'GET') {
       const integrations = await db.collection('integrations').findOne({ userId: 'default' })
@@ -229,6 +377,141 @@ async function handleRoute(request, { params }) {
           { status: 400 }
         ))
       }
+    }
+
+    // Campaigns endpoints
+    if (route === '/campaigns' && method === 'GET') {
+      const campaigns = await db.collection('campaigns')
+        .find({ userId: 'default' })
+        .sort({ createdAt: -1 })
+        .limit(100)
+        .toArray()
+
+      const cleanedCampaigns = campaigns.map(({ _id, ...rest }) => rest)
+      return handleCORS(NextResponse.json(cleanedCampaigns))
+    }
+
+    if (route === '/campaigns' && method === 'POST') {
+      const body = await request.json()
+      
+      if (!body.name || !body.message) {
+        return handleCORS(NextResponse.json(
+          { error: "Campaign name and message are required" }, 
+          { status: 400 }
+        ))
+      }
+
+      const campaign = {
+        id: uuidv4(),
+        userId: 'default',
+        name: body.name,
+        message: body.message,
+        audience: body.audience || 'all_customers',
+        recipients: body.recipients || [],
+        status: body.status || 'draft',
+        createdAt: new Date()
+      }
+
+      await db.collection('campaigns').insertOne(campaign)
+      
+      const { _id, ...cleanedCampaign } = campaign
+      return handleCORS(NextResponse.json(cleanedCampaign))
+    }
+
+    // Send campaign endpoint
+    if (route.startsWith('/campaigns/') && route.endsWith('/send') && method === 'POST') {
+      const campaignId = route.split('/')[2]
+      
+      const campaign = await db.collection('campaigns').findOne({ 
+        id: campaignId, 
+        userId: 'default' 
+      })
+      
+      if (!campaign) {
+        return handleCORS(NextResponse.json(
+          { error: "Campaign not found" }, 
+          { status: 404 }
+        ))
+      }
+
+      const integrations = await db.collection('integrations').findOne({ userId: 'default' })
+      
+      if (!integrations?.whatsapp?.phoneNumberId || !integrations?.whatsapp?.accessToken) {
+        return handleCORS(NextResponse.json(
+          { error: "WhatsApp not configured" }, 
+          { status: 400 }
+        ))
+      }
+
+      try {
+        const results = await sendCampaignToRecipients(campaign, integrations, db)
+        
+        // Update campaign status
+        await db.collection('campaigns').updateOne(
+          { id: campaignId },
+          { 
+            $set: { 
+              status: 'sent',
+              sentAt: new Date(),
+              results: results
+            }
+          }
+        )
+
+        return handleCORS(NextResponse.json({ 
+          success: true, 
+          results: results 
+        }))
+
+      } catch (error) {
+        // Update campaign status to failed
+        await db.collection('campaigns').updateOne(
+          { id: campaignId },
+          { 
+            $set: { 
+              status: 'failed',
+              error: error.message,
+              failedAt: new Date()
+            }
+          }
+        )
+
+        return handleCORS(NextResponse.json(
+          { error: `Failed to send campaign: ${error.message}` }, 
+          { status: 400 }
+        ))
+      }
+    }
+
+    // Delete campaign endpoint
+    if (route.startsWith('/campaigns/') && method === 'DELETE') {
+      const campaignId = route.split('/')[2]
+      
+      const result = await db.collection('campaigns').deleteOne({ 
+        id: campaignId, 
+        userId: 'default' 
+      })
+      
+      if (result.deletedCount === 0) {
+        return handleCORS(NextResponse.json(
+          { error: "Campaign not found" }, 
+          { status: 404 }
+        ))
+      }
+
+      return handleCORS(NextResponse.json({ success: true }))
+    }
+
+    // Orders endpoint
+    if (route === '/orders' && method === 'GET') {
+      const orders = await db.collection('orders')
+        .find({ userId: 'default' })
+        .sort({ createdAt: -1 })
+        .limit(100)
+        .toArray()
+
+      const cleanedOrders = orders.map(({ _id, ...rest }) => rest)
+      return handleCORS(NextResponse.json(cleanedOrders))
     }
 
     // Send catalog endpoint
@@ -378,6 +661,108 @@ async function handleRoute(request, { params }) {
       })
       
       return handleCORS(NextResponse.json({ success: true }))
+    }
+
+    // Webhook endpoint for Shopify
+    if (route === '/webhook/shopify' && method === 'POST') {
+      const body = await request.json()
+      
+      // Log webhook for debugging
+      await db.collection('webhook_logs').insertOne({
+        id: uuidv4(),
+        type: 'shopify',
+        payload: body,
+        receivedAt: new Date()
+      })
+
+      try {
+        // Process Shopify order webhook
+        if (body.id && body.customer) {
+          const order = {
+            id: uuidv4(),
+            userId: 'default',
+            shopifyOrderId: body.id.toString(),
+            orderNumber: body.order_number || body.name,
+            customerName: `${body.customer.first_name} ${body.customer.last_name}`.trim(),
+            customerEmail: body.customer.email,
+            customerPhone: body.customer.phone,
+            total: body.total_price,
+            currency: body.currency,
+            status: body.fulfillment_status || 'pending',
+            lineItems: body.line_items || [],
+            createdAt: new Date(body.created_at),
+            whatsappSent: false
+          }
+
+          // Save order to database
+          await db.collection('orders').insertOne(order)
+
+          // Send WhatsApp confirmation to customer if phone number exists
+          if (order.customerPhone) {
+            const integrations = await db.collection('integrations').findOne({ userId: 'default' })
+            
+            if (integrations?.whatsapp?.phoneNumberId && integrations?.whatsapp?.accessToken) {
+              try {
+                const confirmationMessage = `🎉 *Order Confirmation*\n\n` +
+                  `Thank you for your order, ${order.customerName}!\n\n` +
+                  `📋 Order #${order.orderNumber}\n` +
+                  `💰 Total: ${order.currency} ${order.total}\n` +
+                  `📦 Status: Processing\n\n` +
+                  `We'll send you updates as your order progresses. Thank you for choosing us! 🙏`
+
+                const messageData = {
+                  messaging_product: "whatsapp",
+                  to: order.customerPhone.replace(/\D/g, ''),
+                  type: "text",
+                  text: {
+                    body: confirmationMessage
+                  }
+                }
+
+                const result = await sendWhatsAppMessage(
+                  integrations.whatsapp.phoneNumberId,
+                  integrations.whatsapp.accessToken,
+                  order.customerPhone,
+                  messageData
+                )
+
+                // Update order to mark WhatsApp as sent
+                await db.collection('orders').updateOne(
+                  { id: order.id },
+                  { 
+                    $set: { 
+                      whatsappSent: true,
+                      whatsappMessageId: result.messages?.[0]?.id,
+                      whatsappSentAt: new Date()
+                    }
+                  }
+                )
+
+                // Log the message
+                await db.collection('messages').insertOne({
+                  id: uuidv4(),
+                  userId: 'default',
+                  orderId: order.id,
+                  recipient: order.customerPhone,
+                  message: confirmationMessage,
+                  whatsappMessageId: result.messages?.[0]?.id,
+                  status: 'sent',
+                  sentAt: new Date()
+                })
+
+              } catch (whatsappError) {
+                console.error('Failed to send WhatsApp confirmation:', whatsappError)
+                // Don't fail the webhook if WhatsApp fails
+              }
+            }
+          }
+        }
+
+        return handleCORS(NextResponse.json({ success: true }))
+      } catch (error) {
+        console.error('Shopify webhook processing error:', error)
+        return handleCORS(NextResponse.json({ success: true })) // Always return success to Shopify
+      }
     }
 
     // Route not found
