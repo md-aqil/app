@@ -31,7 +31,8 @@ export async function OPTIONS() {
 
 // WhatsApp API functions
 async function sendWhatsAppMessage(phoneNumberId, accessToken, to, messageData) {
-  const url = `https://graph.facebook.com/v17.0/${phoneNumberId}/messages`
+  // Updated to use the same version as your working cURL command
+  const url = `https://graph.facebook.com/v22.0/${phoneNumberId}/messages`
   
   const response = await fetch(url, {
     method: 'POST',
@@ -43,11 +44,63 @@ async function sendWhatsAppMessage(phoneNumberId, accessToken, to, messageData) 
   })
 
   const data = await response.json()
+  
+  // Improved error handling to ensure we only return success when the message is actually sent
   if (!response.ok) {
-    throw new Error(data.error?.message || 'WhatsApp API error')
+    console.error('WhatsApp API Error:', data);
+    throw new Error(data.error?.message || `WhatsApp API error: ${response.status} ${response.statusText}`)
+  }
+  
+  // Additional validation that the message was accepted
+  if (!data.messages || !Array.isArray(data.messages) || data.messages.length === 0) {
+    console.error('Unexpected WhatsApp API response:', data);
+    throw new Error('WhatsApp API returned unexpected response format')
   }
   
   return data
+}
+
+async function sendOrderStatusUpdate(phoneNumberId, accessToken, to, order, newStatus) {
+  // Format the status message
+  let statusMessage = '';
+  let statusEmoji = '';
+  
+  switch(newStatus) {
+    case 'fulfilled':
+      statusEmoji = '✅';
+      statusMessage = `Your order #${order.orderNumber} has been fulfilled and is on its way!`;
+      break;
+    case 'shipped':
+      statusEmoji = '🚚';
+      statusMessage = `Your order #${order.orderNumber} has been shipped!`;
+      break;
+    case 'cancelled':
+      statusEmoji = '❌';
+      statusMessage = `Your order #${order.orderNumber} has been cancelled.`;
+      break;
+    case 'refunded':
+      statusEmoji = '💰';
+      statusMessage = `Your order #${order.orderNumber} has been refunded.`;
+      break;
+    default:
+      statusEmoji = '🔄';
+      statusMessage = `Your order #${order.orderNumber} status has been updated to: ${newStatus}`;
+  }
+  
+  const messageData = {
+    messaging_product: "whatsapp",
+    to: to.replace(/\D/g, ''),
+    type: "text",
+    text: {
+      body: `${statusEmoji} *Order Status Update*
+
+${statusMessage}
+
+Thank you for your purchase!`
+    }
+  };
+
+  return await sendWhatsAppMessage(phoneNumberId, accessToken, to, messageData);
 }
 
 // Shopify API functions
@@ -74,6 +127,61 @@ async function fetchShopifyProducts(shopDomain, accessToken) {
     image: product.images[0]?.src,
     handle: product.handle
   }))
+}
+
+async function fetchShopifyOrders(shopDomain, accessToken) {
+  const url = `https://${shopDomain}/admin/api/2023-10/orders.json?status=any`
+  
+  const response = await fetch(url, {
+    headers: {
+      'X-Shopify-Access-Token': accessToken,
+      'Content-Type': 'application/json'
+    }
+  })
+
+  const data = await response.json()
+  if (!response.ok) {
+    throw new Error(data.errors || 'Shopify API error')
+  }
+
+  // Transform Shopify orders to match our internal format
+  return data.orders.map(order => ({
+    id: `shopify-${order.id}`,
+    userId: 'default',
+    shopifyOrderId: order.id.toString(),
+    orderNumber: order.order_number,
+    customerName: `${order.customer?.first_name || ''} ${order.customer?.last_name || ''}`.trim(),
+    customerEmail: order.customer?.email,
+    customerPhone: order.customer?.phone,
+    total: order.total_price,
+    currency: order.currency,
+    status: order.financial_status,
+    lineItems: order.line_items || [],
+    createdAt: new Date(order.created_at),
+    updatedAt: new Date(order.updated_at || order.created_at)
+  }))
+}
+
+async function fetchCompleteShopifyOrder(shopDomain, accessToken, orderId) {
+  const url = `https://${shopDomain}/admin/api/2023-10/orders/${orderId}.json`;
+  
+  console.log(`Fetching complete order ${orderId} from Shopify API: ${url}`);
+  
+  const response = await fetch(url, {
+    headers: {
+      'X-Shopify-Access-Token': accessToken,
+      'Content-Type': 'application/json'
+    }
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    console.error(`Shopify API error fetching complete order ${orderId}:`, data.errors || response.status);
+    throw new Error(data.errors || 'Shopify API error fetching complete order');
+  }
+
+  console.log(`Successfully fetched complete order ${orderId}`);
+  return data.order;
 }
 
 async function createShopifyWebhook(shopDomain, accessToken, topic, webhookUrl) {
@@ -152,12 +260,14 @@ async function sendCampaignToRecipients(campaign, integrations, db) {
         }
       }
 
+      console.log(`Sending message to ${recipient}...`);
       const result = await sendWhatsAppMessage(
         whatsapp.phoneNumberId,
         whatsapp.accessToken,
         recipient,
         messageData
       )
+      console.log(`Message sent successfully to ${recipient}:`, result);
 
       results.push({
         recipient,
@@ -178,10 +288,23 @@ async function sendCampaignToRecipients(campaign, integrations, db) {
       })
 
     } catch (error) {
+      console.error(`Failed to send message to ${recipient}:`, error.message);
       results.push({
         recipient,
         success: false,
         error: error.message
+      })
+      
+      // Log the error
+      await db.collection('messages').insertOne({
+        id: uuidv4(),
+        userId: 'default',
+        campaignId: campaign.id,
+        recipient,
+        message: campaign.message,
+        status: 'failed',
+        error: error.message,
+        sentAt: new Date()
       })
     }
   }
@@ -192,8 +315,12 @@ async function sendCampaignToRecipients(campaign, integrations, db) {
 // Route handler function
 async function handleRoute(request, { params }) {
   const { path = [] } = params
-  const route = `/${path.join('/')}`
+  // Fix the route construction to properly handle webhook paths
+  const route = path.length > 0 ? `/${path.join('/')}` : '/'
   const method = request.method
+
+  // Add debugging for route matching
+  console.log(`Processing route: ${route}, method: ${method}, path array:`, path)
 
   try {
     const db = await connectToMongo()
@@ -295,7 +422,7 @@ async function handleRoute(request, { params }) {
 
     // Setup webhooks endpoint
     if (route === '/setup-webhooks' && method === 'POST') {
-      const integrations = await db.collection('integrations').findOne({ userId: 'default' })
+      const integrations = await db.collection('integrations').findOne({ userId: 'default' });
       
       if (!integrations?.shopify?.shopDomain || !integrations?.shopify?.accessToken) {
         return handleCORS(NextResponse.json(
@@ -307,22 +434,46 @@ async function handleRoute(request, { params }) {
       try {
         const webhookUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/api/webhook/shopify`
         
-        // Create webhook for order creation
-        const webhook = await createShopifyWebhook(
-          integrations.shopify.shopDomain,
-          integrations.shopify.accessToken,
-          'orders/create',
-          webhookUrl
-        )
+        // Create webhooks for order creation and status updates
+        const webhooks = [
+          { topic: 'orders/create', address: webhookUrl },
+          { topic: 'orders/updated', address: webhookUrl },
+          { topic: 'orders/paid', address: webhookUrl },
+          { topic: 'orders/fulfilled', address: webhookUrl },
+          { topic: 'orders/cancelled', address: webhookUrl },
+          // NEW: Add customer webhooks to capture phone numbers
+          { topic: 'customers/create', address: webhookUrl },
+          { topic: 'customers/update', address: webhookUrl }
+        ];
+        
+        const createdWebhooks = [];
+        
+        for (const webhook of webhooks) {
+          try {
+            const createdWebhook = await createShopifyWebhook(
+              integrations.shopify.shopDomain,
+              integrations.shopify.accessToken,
+              webhook.topic,
+              webhook.address
+            );
+            
+            createdWebhooks.push({
+              webhookId: createdWebhook.id,
+              topic: webhook.topic,
+              address: webhook.address
+            });
+          } catch (error) {
+            console.error(`Failed to create webhook for ${webhook.topic}:`, error.message);
+            // Continue with other webhooks even if one fails
+          }
+        }
 
         // Save webhook info
         await db.collection('webhooks').updateOne(
           { userId: 'default', type: 'shopify' },
           { 
             $set: { 
-              webhookId: webhook.id,
-              topic: 'orders/create',
-              address: webhookUrl,
+              webhooks: createdWebhooks,
               createdAt: new Date()
             }
           },
@@ -331,11 +482,11 @@ async function handleRoute(request, { params }) {
 
         return handleCORS(NextResponse.json({ 
           success: true, 
-          webhookId: webhook.id 
+          webhooks: createdWebhooks 
         }))
       } catch (error) {
         return handleCORS(NextResponse.json(
-          { error: `Failed to setup webhook: ${error.message}` }, 
+          { error: `Failed to setup webhooks: ${error.message}` }, 
           { status: 400 }
         ))
       }
@@ -504,6 +655,26 @@ async function handleRoute(request, { params }) {
 
     // Orders endpoint
     if (route === '/orders' && method === 'GET') {
+      // Try to fetch orders from Shopify if integration is configured
+      const integrations = await db.collection('integrations').findOne({ userId: 'default' })
+      
+      if (integrations?.shopify?.shopDomain && integrations?.shopify?.accessToken) {
+        try {
+          // Fetch orders directly from Shopify
+          const shopifyOrders = await fetchShopifyOrders(
+            integrations.shopify.shopDomain,
+            integrations.shopify.accessToken
+          )
+          
+          // Return Shopify orders
+          return handleCORS(NextResponse.json(shopifyOrders))
+        } catch (error) {
+          console.error('Failed to fetch Shopify orders:', error)
+          // Fall back to database orders if Shopify fetch fails
+        }
+      }
+      
+      // Fall back to database orders
       const orders = await db.collection('orders')
         .find({ userId: 'default' })
         .sort({ createdAt: -1 })
@@ -562,71 +733,236 @@ async function handleRoute(request, { params }) {
       }
 
       try {
-        // Create catalog message
-        let catalogText = "🛍️ *Product Catalog*\n\n"
+        // Validate and format phone number
+        const formattedRecipient = recipient.replace(/\D/g, '');
         
-        for (const product of selectedProducts) {
-          catalogText += `*${product.title}*\n`
-          if (product.description) {
-            catalogText += `${product.description.substring(0, 100)}...\n`
-          }
-          catalogText += `💰 Price: $${product.price}\n`
+        // Log the recipient number for debugging
+        console.log(`Sending catalog to: ${recipient}, formatted: ${formattedRecipient}`);
+        
+        // Check if the number seems valid
+        if (formattedRecipient.length < 10) {
+          return handleCORS(NextResponse.json(
+            { error: "Invalid phone number format. Please include country code." }, 
+            { status: 400 }
+          ))
+        }
+
+        // Check if we have a catalog ID configured
+        const hasCatalogId = integrations.whatsapp.catalogId;
+        
+        // Use catalog link message as it's more reliable
+        if (hasCatalogId) {
+          // Send a catalog link message with selected product information
+          // Use businessAccountId for catalog links, not phoneNumberId
+          const businessAccountId = integrations.whatsapp.businessAccountId || integrations.whatsapp.phoneNumberId;
+          const catalogLink = `https://wa.me/c/${businessAccountId}`;
           
-          // Create Stripe checkout session for individual product
-          if (integrations.stripe?.secretKey) {
-            const checkoutSession = await createStripeCheckoutSession([
-              {
-                price_data: {
-                  currency: 'usd',
-                  product_data: {
-                    name: product.title,
-                    description: product.description
-                  },
-                  unit_amount: Math.round(parseFloat(product.price) * 100)
-                },
-                quantity: 1
-              }
-            ], { productId: product.id })
+          // Create a message that includes information about selected products
+          let productInfo = "";
+          if (selectedProducts.length > 0) {
+            productInfo = "\nSelected products:\n";
+            selectedProducts.slice(0, 3).forEach((product, index) => {
+              productInfo += `${index + 1}. ${product.title} - $${product.price}\n`;
+            });
+            if (selectedProducts.length > 3) {
+              productInfo += `...and ${selectedProducts.length - 3} more items\n`;
+            }
+            productInfo += "\n";
+          }
+          
+          const messageData = {
+            messaging_product: "whatsapp",
+            to: formattedRecipient,
+            type: "text",
+            text: {
+              body: `🛍️ *Our Product Catalog*
+
+Check out our latest products:
+${catalogLink}
+
+${productInfo}Browse our full collection and find something special just for you!
+
+🛍️ *Shop Now* - Click the link above to browse our catalog`,
+              preview_url: true
+            }
+          };
+
+          console.log('Sending message with data:', JSON.stringify(messageData, null, 2));
+
+          const result = await sendWhatsAppMessage(
+            integrations.whatsapp.phoneNumberId,
+            integrations.whatsapp.accessToken,
+            formattedRecipient,
+            messageData
+          );
+
+          console.log('WhatsApp API response:', JSON.stringify(result, null, 2));
+
+          // Log the message
+          await db.collection('messages').insertOne({
+            id: uuidv4(),
+            userId: 'default',
+            recipient: formattedRecipient,
+            products: selectedProducts,
+            whatsappMessageId: result.messages?.[0]?.id,
+            status: 'sent',
+            sentAt: new Date()
+          });
+
+          return handleCORS(NextResponse.json({ 
+            success: true, 
+            messageId: result.messages?.[0]?.id 
+          }));
+        } else {
+          // Fallback to text message if no catalog ID is configured
+          if (selectedProducts.length === 1) {
+            // For single product, include image link and better formatting
+            const product = selectedProducts[0];
+            let catalogText = `🛍️ *${product.title}*\n\n`;
             
-            catalogText += `🛒 Buy now: ${checkoutSession.url}\n\n`
+            if (product.image) {
+              catalogText += `${product.image}\n\n`;
+            }
+            
+            if (product.description) {
+              catalogText += `${product.description.substring(0, 200)}${product.description.length > 200 ? '...' : ''}\n\n`;
+            }
+            
+            catalogText += `💰 *Price: $${product.price}*\n\n`;
+            
+            // Create Stripe checkout session for individual product
+            if (integrations.stripe?.secretKey) {
+              const checkoutSession = await createStripeCheckoutSession([
+                {
+                  price_data: {
+                    currency: 'usd',
+                    product_data: {
+                      name: product.title,
+                      description: product.description
+                    },
+                    unit_amount: Math.round(parseFloat(product.price) * 100)
+                  },
+                  quantity: 1
+                }
+              ], { productId: product.id });
+              
+              catalogText += `🛒 *Buy now:* ${checkoutSession.url}\n\n`;
+            } else {
+              catalogText += `🛒 Contact us to purchase\n\n`;
+            }
+            
+            catalogText += "_💡 Tip: Connect your Facebook catalog for a better shopping experience with images!_";
+
+            const messageData = {
+              messaging_product: "whatsapp",
+              to: formattedRecipient,
+              type: "text",
+              text: {
+                body: catalogText
+              }
+            };
+
+            console.log('Sending message with data:', JSON.stringify(messageData, null, 2));
+
+            const result = await sendWhatsAppMessage(
+              integrations.whatsapp.phoneNumberId,
+              integrations.whatsapp.accessToken,
+              formattedRecipient,
+              messageData
+            );
+
+            console.log('WhatsApp API response:', JSON.stringify(result, null, 2));
+
+            // Log the message
+            await db.collection('messages').insertOne({
+              id: uuidv4(),
+              userId: 'default',
+              recipient: formattedRecipient,
+              products: selectedProducts,
+              whatsappMessageId: result.messages?.[0]?.id,
+              status: 'sent',
+              sentAt: new Date()
+            });
+
+            return handleCORS(NextResponse.json({ 
+              success: true, 
+              messageId: result.messages?.[0]?.id 
+            }));
           } else {
-            catalogText += `🛒 Contact us to purchase\n\n`
+            // Fallback to text message for multiple products
+            let catalogText = "🛍️ *Product Catalog*\n\n";
+            
+            for (const product of selectedProducts) {
+              catalogText += `*${product.title}*\n`;
+              if (product.description) {
+                catalogText += `${product.description.substring(0, 100)}...\n`;
+              }
+              catalogText += `💰 Price: $${product.price}\n`;
+              
+              // Create Stripe checkout session for individual product
+              if (integrations.stripe?.secretKey) {
+                const checkoutSession = await createStripeCheckoutSession([
+                  {
+                    price_data: {
+                      currency: 'usd',
+                      product_data: {
+                        name: product.title,
+                        description: product.description
+                      },
+                      unit_amount: Math.round(parseFloat(product.price) * 100)
+                    },
+                    quantity: 1
+                  }
+                ], { productId: product.id });
+                
+                catalogText += `🛒 Buy now: ${checkoutSession.url}\n\n`;
+              } else {
+                catalogText += `🛒 Contact us to purchase\n\n`;
+              }
+            }
+
+            // Add a note about setting up catalog for better experience
+            catalogText += "_💡 Tip: Connect your Facebook catalog for a better shopping experience!_";
+
+            const messageData = {
+              messaging_product: "whatsapp",
+              to: formattedRecipient,
+              type: "text",
+              text: {
+                body: catalogText
+              }
+            };
+
+            console.log('Sending message with data:', JSON.stringify(messageData, null, 2));
+
+            const result = await sendWhatsAppMessage(
+              integrations.whatsapp.phoneNumberId,
+              integrations.whatsapp.accessToken,
+              formattedRecipient,
+              messageData
+            );
+
+            console.log('WhatsApp API response:', JSON.stringify(result, null, 2));
+
+            // Log the message
+            await db.collection('messages').insertOne({
+              id: uuidv4(),
+              userId: 'default',
+              recipient: formattedRecipient,
+              products: selectedProducts,
+              whatsappMessageId: result.messages?.[0]?.id,
+              status: 'sent',
+              sentAt: new Date()
+            });
+
+            return handleCORS(NextResponse.json({ 
+              success: true, 
+              messageId: result.messages?.[0]?.id 
+            }));
           }
         }
-
-        const messageData = {
-          messaging_product: "whatsapp",
-          to: recipient.replace(/\D/g, ''), // Remove non-digits
-          type: "text",
-          text: {
-            body: catalogText
-          }
-        }
-
-        const result = await sendWhatsAppMessage(
-          integrations.whatsapp.phoneNumberId,
-          integrations.whatsapp.accessToken,
-          recipient,
-          messageData
-        )
-
-        // Log the message
-        await db.collection('messages').insertOne({
-          id: uuidv4(),
-          userId: 'default',
-          recipient,
-          products: selectedProducts,
-          whatsappMessageId: result.messages?.[0]?.id,
-          status: 'sent',
-          sentAt: new Date()
-        })
-
-        return handleCORS(NextResponse.json({ 
-          success: true, 
-          messageId: result.messages?.[0]?.id 
-        }))
-
       } catch (error) {
+        console.error('Failed to send catalog message:', error);
         return handleCORS(NextResponse.json(
           { error: `Failed to send message: ${error.message}` }, 
           { status: 400 }
@@ -650,45 +986,315 @@ async function handleRoute(request, { params }) {
     }
 
     if (route === '/webhook/whatsapp' && method === 'POST') {
-      const body = await request.json()
-      
-      // Log webhook for debugging
-      await db.collection('webhook_logs').insertOne({
-        id: uuidv4(),
-        type: 'whatsapp',
-        payload: body,
-        receivedAt: new Date()
-      })
-      
-      return handleCORS(NextResponse.json({ success: true }))
+      try {
+        const body = await request.json()
+        
+        // Log webhook for debugging
+        await db.collection('webhook_logs').insertOne({
+          id: uuidv4(),
+          type: 'whatsapp',
+          payload: body,
+          receivedAt: new Date()
+        })
+        
+        return handleCORS(NextResponse.json({ success: true }))
+      } catch (error) {
+        console.error('WhatsApp webhook processing error:', error)
+        // Always return success to WhatsApp even if we have errors
+        // This prevents WhatsApp from retrying the webhook
+        return handleCORS(NextResponse.json({ success: true }))
+      }
     }
 
     // Webhook endpoint for Shopify
+    // Fixed the route matching to properly handle webhook paths
     if (route === '/webhook/shopify' && method === 'POST') {
-      const body = await request.json()
-      
-      // Log webhook for debugging
-      await db.collection('webhook_logs').insertOne({
-        id: uuidv4(),
-        type: 'shopify',
-        payload: body,
-        receivedAt: new Date()
-      })
-
       try {
-        // Process Shopify order webhook
-        if (body.id && body.customer) {
+        const body = await request.json()
+        const topic = request.headers.get('x-shopify-topic')
+        
+        // Log webhook for debugging
+        await db.collection('webhook_logs').insertOne({
+          id: uuidv4(),
+          type: 'shopify',
+          topic: topic,
+          payload: body,
+          receivedAt: new Date()
+        })
+
+        // Process different Shopify webhook topics
+        if (topic === 'orders/create' && body.id) {
+          // Log detailed information about the incoming order
+          console.log(`=== NEW ORDER RECEIVED ===`);
+          console.log(`Order Number: ${body.order_number}`);
+          console.log(`Order ID: ${body.id}`);
+          console.log(`Customer ID: ${body.customer?.id}`);
+          console.log(`Customer Email: ${body.customer?.email}`);
+          
+          // Enhanced order creation logic to handle missing customer data
+          // Look for phone number in multiple places
+          let customerPhone = null;
+          
+          // Log what data we received
+          console.log(`Received customer data:`, JSON.stringify(body.customer, null, 2));
+          console.log(`Received shipping address:`, JSON.stringify(body.shipping_address, null, 2));
+          console.log(`Received billing address:`, JSON.stringify(body.billing_address, null, 2));
+          
+          // Check customer object
+          if (body.customer && body.customer.phone) {
+            customerPhone = body.customer.phone;
+            console.log(`Found phone in customer.phone: ${customerPhone}`);
+          }
+          // Check shipping address
+          else if (body.shipping_address && body.shipping_address.phone) {
+            customerPhone = body.shipping_address.phone;
+            console.log(`Found phone in shipping_address.phone: ${customerPhone}`);
+          }
+          // Check billing address
+          else if (body.billing_address && body.billing_address.phone) {
+            customerPhone = body.billing_address.phone;
+            console.log(`Found phone in billing_address.phone: ${customerPhone}`);
+          }
+          
+          // NEW: Additional check for phone numbers in address fields
+          // Sometimes Shopify doesn't send phone in dedicated phone field but in address fields
+          if (!customerPhone) {
+            console.log('Checking for phone numbers in name/address fields...');
+            
+            // Check if phone is in shipping address fields
+            if (body.shipping_address) {
+              // Look for phone in first_name, last_name, or address fields as a fallback
+              const shippingFields = [
+                body.shipping_address.first_name,
+                body.shipping_address.last_name,
+                body.shipping_address.address1,
+                body.shipping_address.address2
+              ];
+              
+              console.log('Shipping address fields to check:', shippingFields);
+              
+              for (const field of shippingFields) {
+                if (field && typeof field === 'string') {
+                  // Look for common phone number patterns
+                  const phoneMatch = field.match(/(\+?\d{10,15})|(\d{10})/);
+                  if (phoneMatch) {
+                    customerPhone = phoneMatch[0];
+                    console.log(`Found phone number in shipping address field: ${customerPhone}`);
+                    break;
+                  }
+                }
+              }
+            }
+            
+            // Check if phone is in billing address fields
+            if (!customerPhone && body.billing_address) {
+              const billingFields = [
+                body.billing_address.first_name,
+                body.billing_address.last_name,
+                body.billing_address.address1,
+                body.billing_address.address2
+              ];
+              
+              console.log('Billing address fields to check:', billingFields);
+              
+              for (const field of billingFields) {
+                if (field && typeof field === 'string') {
+                  // Look for common phone number patterns
+                  const phoneMatch = field.match(/(\+?\d{10,15})|(\d{10})/);
+                  if (phoneMatch) {
+                    customerPhone = phoneMatch[0];
+                    console.log(`Found phone number in billing address field: ${customerPhone}`);
+                    break;
+                  }
+                }
+              }
+            }
+            
+            // Check if phone is in customer name fields
+            if (!customerPhone && body.customer) {
+              const customerFields = [
+                body.customer.first_name,
+                body.customer.last_name
+              ];
+              
+              console.log('Customer name fields to check:', customerFields);
+              
+              for (const field of customerFields) {
+                if (field && typeof field === 'string') {
+                  // Look for common phone number patterns
+                  const phoneMatch = field.match(/(\+?\d{10,15})|(\d{10})/);
+                  if (phoneMatch) {
+                    customerPhone = phoneMatch[0];
+                    console.log(`Found phone number in customer name field: ${customerPhone}`);
+                    break;
+                  }
+                }
+              }
+            }
+          }
+          
+          // NEW: If still no phone found, check our customer database for regular customers
+          if (!customerPhone && body.customer && body.customer.id) {
+            try {
+              console.log(`No phone found in webhook data for order ${body.order_number}, checking customer database for regular customer`);
+              const customerRecord = await db.collection('shopify_customers').findOne({ 
+                customerId: body.customer.id.toString() 
+              });
+              
+              if (customerRecord && customerRecord.phone) {
+                customerPhone = customerRecord.phone;
+                console.log(`Found phone in customer database for regular customer: ${customerPhone}`);
+              } else {
+                console.log('No customer record found in database or no phone in record for regular customer');
+              }
+            } catch (dbError) {
+              console.error('Error checking customer database for regular customer:', dbError.message);
+            }
+          }
+          
+          // NEW: If still no phone found, check our customer database for guest customers
+          if (!customerPhone && body.customer && body.customer.id) {
+            try {
+              console.log(`No phone found for regular customer, checking customer database for guest customer`);
+              const guestCustomerRecord = await db.collection('shopify_customers').findOne({ 
+                customerId: `guest-${body.customer.id.toString()}` 
+              });
+              
+              if (guestCustomerRecord && guestCustomerRecord.phone) {
+                customerPhone = guestCustomerRecord.phone;
+                console.log(`Found phone in customer database for guest customer: ${customerPhone}`);
+              } else {
+                console.log('No customer record found in database or no phone in record for guest customer');
+              }
+            } catch (dbError) {
+              console.error('Error checking customer database for guest customer:', dbError.message);
+            }
+          }
+          
+          // NEW: If still no phone found, fetch complete order from Shopify API
+          if (!customerPhone) {
+            try {
+              console.log(`No phone found in webhook data for order ${body.order_number}, fetching complete order from Shopify API`);
+              const integrations = await db.collection('integrations').findOne({ userId: 'default' });
+              
+              if (integrations?.shopify?.shopDomain && integrations?.shopify?.accessToken) {
+                const completeOrder = await fetchCompleteShopifyOrder(
+                  integrations.shopify.shopDomain,
+                  integrations.shopify.accessToken,
+                  body.id
+                );
+                
+                console.log(`Complete order fetched for order ${body.order_number}`);
+                
+                // Log what data we received from the complete order
+                console.log(`Complete order customer data:`, JSON.stringify(completeOrder.customer, null, 2));
+                console.log(`Complete order shipping address:`, JSON.stringify(completeOrder.shipping_address, null, 2));
+                console.log(`Complete order billing address:`, JSON.stringify(completeOrder.billing_address, null, 2));
+                
+                // Try to find phone in the complete order data
+                if (completeOrder.customer && completeOrder.customer.phone) {
+                  customerPhone = completeOrder.customer.phone;
+                  console.log(`Found phone in complete order customer data: ${customerPhone}`);
+                } else if (completeOrder.shipping_address && completeOrder.shipping_address.phone) {
+                  customerPhone = completeOrder.shipping_address.phone;
+                  console.log(`Found phone in complete order shipping address: ${customerPhone}`);
+                } else if (completeOrder.billing_address && completeOrder.billing_address.phone) {
+                  customerPhone = completeOrder.billing_address.phone;
+                  console.log(`Found phone in complete order billing address: ${customerPhone}`);
+                }
+                
+                // If still not found, check for phone numbers in name/address fields of complete order
+                if (!customerPhone) {
+                  console.log('Checking complete order for phone numbers in name/address fields');
+                  
+                  // Check shipping address fields
+                  if (completeOrder.shipping_address) {
+                    const shippingFields = [
+                      completeOrder.shipping_address.first_name,
+                      completeOrder.shipping_address.last_name,
+                      completeOrder.shipping_address.address1,
+                      completeOrder.shipping_address.address2
+                    ];
+                    
+                    console.log('Shipping address fields to check:', shippingFields);
+                    
+                    for (const field of shippingFields) {
+                      if (field && typeof field === 'string') {
+                        const phoneMatch = field.match(/(\+?\d{10,15})|(\d{10})/);
+                        if (phoneMatch) {
+                          customerPhone = phoneMatch[0];
+                          console.log(`Found phone number in complete order shipping address field: ${customerPhone}`);
+                          break;
+                        }
+                      }
+                    }
+                  }
+                  
+                  // Check billing address fields
+                  if (!customerPhone && completeOrder.billing_address) {
+                    const billingFields = [
+                      completeOrder.billing_address.first_name,
+                      completeOrder.billing_address.last_name,
+                      completeOrder.billing_address.address1,
+                      completeOrder.billing_address.address2
+                    ];
+                    
+                    console.log('Billing address fields to check:', billingFields);
+                    
+                    for (const field of billingFields) {
+                      if (field && typeof field === 'string') {
+                        const phoneMatch = field.match(/(\+?\d{10,15})|(\d{10})/);
+                        if (phoneMatch) {
+                          customerPhone = phoneMatch[0];
+                          console.log(`Found phone number in complete order billing address field: ${customerPhone}`);
+                          break;
+                        }
+                      }
+                    }
+                  }
+                  
+                  // Check customer name fields
+                  if (!customerPhone && completeOrder.customer) {
+                    const customerFields = [
+                      completeOrder.customer.first_name,
+                      completeOrder.customer.last_name
+                    ];
+                    
+                    console.log('Customer name fields to check:', customerFields);
+                    
+                    for (const field of customerFields) {
+                      if (field && typeof field === 'string') {
+                        const phoneMatch = field.match(/(\+?\d{10,15})|(\d{10})/);
+                        if (phoneMatch) {
+                          customerPhone = phoneMatch[0];
+                          console.log(`Found phone number in complete order customer name field: ${customerPhone}`);
+                          break;
+                        }
+                      }
+                    }
+                  }
+                }
+              } else {
+                console.log('Shopify integration not configured, cannot fetch complete order');
+              }
+            } catch (fetchError) {
+              console.error('Error fetching complete order from Shopify API:', fetchError.message);
+            }
+          }
+
           const order = {
             id: uuidv4(),
             userId: 'default',
             shopifyOrderId: body.id.toString(),
             orderNumber: body.order_number || body.name,
-            customerName: `${body.customer.first_name} ${body.customer.last_name}`.trim(),
-            customerEmail: body.customer.email,
-            customerPhone: body.customer.phone,
+            customerName: body.customer ? 
+              `${body.customer.first_name || ''} ${body.customer.last_name || ''}`.trim() : 
+              'Unknown Customer',
+            customerEmail: body.customer ? body.customer.email : null,
+            customerPhone: customerPhone,
             total: body.total_price,
             currency: body.currency,
-            status: body.fulfillment_status || 'pending',
+            status: body.financial_status || 'pending',
             lineItems: body.line_items || [],
             createdAt: new Date(body.created_at),
             whatsappSent: false
@@ -696,9 +1302,14 @@ async function handleRoute(request, { params }) {
 
           // Save order to database
           await db.collection('orders').insertOne(order)
+      
+          console.log(`=== ORDER PROCESSING COMPLETE ===`);
+          console.log(`Order ${order.orderNumber} saved.`);
+          console.log(`Customer phone: ${customerPhone ? customerPhone : 'NOT FOUND'}`);
+          console.log(`WhatsApp notification: ${customerPhone ? 'WILL BE SENT' : 'SKIPPED (no phone)'}`);
 
           // Send WhatsApp confirmation to customer if phone number exists
-          if (order.customerPhone) {
+          if (customerPhone) {
             const integrations = await db.collection('integrations').findOne({ userId: 'default' })
             
             if (integrations?.whatsapp?.phoneNumberId && integrations?.whatsapp?.accessToken) {
@@ -712,7 +1323,7 @@ async function handleRoute(request, { params }) {
 
                 const messageData = {
                   messaging_product: "whatsapp",
-                  to: order.customerPhone.replace(/\D/g, ''),
+                  to: customerPhone.replace(/\D/g, ''),
                   type: "text",
                   text: {
                     body: confirmationMessage
@@ -722,7 +1333,7 @@ async function handleRoute(request, { params }) {
                 const result = await sendWhatsAppMessage(
                   integrations.whatsapp.phoneNumberId,
                   integrations.whatsapp.accessToken,
-                  order.customerPhone,
+                  customerPhone,
                   messageData
                 )
 
@@ -743,16 +1354,81 @@ async function handleRoute(request, { params }) {
                   id: uuidv4(),
                   userId: 'default',
                   orderId: order.id,
-                  recipient: order.customerPhone,
+                  recipient: customerPhone,
                   message: confirmationMessage,
                   whatsappMessageId: result.messages?.[0]?.id,
                   status: 'sent',
                   sentAt: new Date()
                 })
+                
+                console.log(`WhatsApp confirmation sent for order ${order.orderNumber}`);
 
               } catch (whatsappError) {
                 console.error('Failed to send WhatsApp confirmation:', whatsappError)
                 // Don't fail the webhook if WhatsApp fails
+              }
+            } else {
+              console.log('WhatsApp not configured, skipping notification');
+            }
+          } else {
+            console.log(`No phone number found for order ${order.orderNumber}, skipping WhatsApp notification`);
+          }
+        } 
+        // Handle order status updates
+        else if (topic && topic.startsWith('orders/') && body.id) {
+          // Get the order from our database
+          const existingOrder = await db.collection('orders').findOne({ 
+            shopifyOrderId: body.id.toString() 
+          })
+          
+          if (existingOrder) {
+            // Extract the status from the topic (orders/fulfilled -> fulfilled)
+            const newStatus = topic.replace('orders/', '')
+            
+            // Update order in database
+            await db.collection('orders').updateOne(
+              { shopifyOrderId: body.id.toString() },
+              { 
+                $set: { 
+                  status: newStatus,
+                  updatedAt: new Date()
+                }
+              }
+            )
+            
+            // Send WhatsApp notification if customer phone exists and status has changed
+            if (existingOrder.customerPhone && existingOrder.status !== newStatus) {
+              const integrations = await db.collection('integrations').findOne({ userId: 'default' })
+              
+              if (integrations?.whatsapp?.phoneNumberId && integrations?.whatsapp?.accessToken) {
+                try {
+                  // Send status update notification
+                  const result = await sendOrderStatusUpdate(
+                    integrations.whatsapp.phoneNumberId,
+                    integrations.whatsapp.accessToken,
+                    existingOrder.customerPhone,
+                    existingOrder,
+                    newStatus
+                  )
+                  
+                  // Log the message
+                  await db.collection('messages').insertOne({
+                    id: uuidv4(),
+                    userId: 'default',
+                    orderId: existingOrder.id,
+                    recipient: existingOrder.customerPhone,
+                    message: `Order status update: ${newStatus}`,
+                    whatsappMessageId: result.messages?.[0]?.id,
+                    status: 'sent',
+                    sentAt: new Date()
+                  })
+                  
+                  console.log(`WhatsApp status update sent for order ${existingOrder.orderNumber} (${newStatus})`);
+                  
+                } catch (whatsappError) {
+                  console.error('Failed to send WhatsApp status update:', whatsappError)
+                  // Don't fail the webhook if WhatsApp fails
+                }
               }
             }
           }
@@ -761,11 +1437,23 @@ async function handleRoute(request, { params }) {
         return handleCORS(NextResponse.json({ success: true }))
       } catch (error) {
         console.error('Shopify webhook processing error:', error)
-        return handleCORS(NextResponse.json({ success: true })) // Always return success to Shopify
+        // Always return success to Shopify even if we have errors
+        // This prevents Shopify from retrying the webhook
+        return handleCORS(NextResponse.json({ success: true }))
       }
     }
 
+    // Add a specific handler for debugging the route
+    if (route === '/webhook/shopify' && method === 'GET') {
+      return handleCORS(NextResponse.json({ 
+        message: "Shopify webhook endpoint is working", 
+        method: "GET",
+        note: "Shopify webhooks use POST method"
+      }))
+    }
+
     // Route not found
+    console.log(`Route not found: ${route}, method: ${method}`)
     return handleCORS(NextResponse.json(
       { error: `Route ${route} not found` }, 
       { status: 404 }

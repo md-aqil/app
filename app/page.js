@@ -99,13 +99,19 @@ export default function App() {
 
   const loadOrders = async () => {
     try {
+      setLoading(true)
       const response = await fetch('/api/orders')
       if (response.ok) {
         const data = await response.json()
         setOrders(data)
+      } else {
+        toast.error('Failed to load orders')
       }
     } catch (error) {
       console.error('Failed to load orders:', error)
+      toast.error('Failed to load orders')
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -274,6 +280,7 @@ export default function App() {
             { key: 'phoneNumberId', label: 'Phone Number ID', placeholder: '818391834688215' },
             { key: 'accessToken', label: 'Access Token', placeholder: 'Your WhatsApp Access Token', type: 'password' },
             { key: 'businessAccountId', label: 'Business Account ID', placeholder: '832073532824981' },
+            { key: 'catalogId', label: 'Catalog ID (Optional)', placeholder: 'Your Facebook Catalog ID' },
             { key: 'webhookVerifyToken', label: 'Webhook Verify Token', placeholder: 'your_verify_token' }
           ]
         case 'shopify':
