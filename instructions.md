@@ -19,6 +19,17 @@ I've updated the order processing logic to:
 
 4. Added better logging to help debug these issues
 
+## New Dashboard Feature
+
+I've also implemented a new dashboard interface with enhanced functionality:
+
+- **Chat System**: Real-time messaging interface with WhatsApp Business API integration
+- **Orders Management**: Overview of all Shopify orders with status tracking
+- **Settings & Integrations**: Centralized configuration for all service integrations
+- **Responsive Design**: Works on desktop and mobile devices
+
+Access the dashboard at: http://localhost:3001/dashboard
+
 ## How to Test the Fix
 
 ### Option 1: Place a Test Order with Phone Number
@@ -74,6 +85,26 @@ node check_orders.js
 ```
 node setup_shopify_webhooks.js
 ```
+
+## Dashboard Usage
+
+### Chat System
+1. Navigate to http://localhost:3001/dashboard/chat
+2. Select a customer conversation from the left sidebar
+3. Send messages using the input field at the bottom
+4. Incoming messages will appear in real-time (when properly configured with webhooks)
+
+### Orders Management
+1. Navigate to http://localhost:3001/dashboard/orders
+2. View all orders with their current status
+3. Track order progress from pending to fulfilled
+
+### Settings Configuration
+1. Navigate to http://localhost:3001/dashboard/settings
+2. Configure your WhatsApp Business API credentials
+3. Set up your Shopify store connection
+4. Configure Stripe payment processing
+5. Copy webhook URLs to your service providers
 
 ## Next Steps
 

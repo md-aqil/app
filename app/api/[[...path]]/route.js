@@ -60,6 +60,132 @@ async function sendWhatsAppMessage(phoneNumberId, accessToken, to, messageData) 
   return data
 }
 
+// Function to save incoming WhatsApp messages to database
+async function saveIncomingMessage(db, messageData) {
+  console.log('saveIncomingMessage called with:', JSON.stringify(messageData, null, 2));
+  
+  // Extract data based on message type
+  const { from, text, timestamp, type, image, document, audio, video, location, contacts } = messageData;
+  
+  // Create message object
+  const message = {
+    id: uuidv4(),
+    userId: 'default',
+    recipient: from, // This is the customer's phone number
+    phone: from, // Also store phone number directly for easier querying
+    message: '', // Will be populated based on message type
+    isCustomer: true,
+    timestamp: new Date(timestamp ? timestamp * 1000 : Date.now()), // Convert WhatsApp timestamp to JS Date
+    whatsappMessageId: messageData.id,
+    status: 'received',
+    messageType: type || 'unknown'
+  };
+  
+  // Handle different message types
+  if (type === 'text' && text?.body) {
+    message.message = text.body;
+  } else if (type === 'image') {
+    message.message = '[Image message received]';
+  } else if (type === 'document') {
+    message.message = '[Document message received]';
+  } else if (type === 'audio') {
+    message.message = '[Audio message received]';
+  } else if (type === 'video') {
+    message.message = '[Video message received]';
+  } else if (type === 'location' && location) {
+    message.message = `[Location: ${location.latitude}, ${location.longitude}]`;
+  } else if (type === 'contacts' && contacts) {
+    message.message = '[Contact information received]';
+  } else {
+    // Fallback for unknown message types
+    message.message = '[Message received]';
+    console.log('Unknown message type:', JSON.stringify(messageData, null, 2));
+  }
+  
+  console.log('Saving message to database:', JSON.stringify(message, null, 2));
+  
+  // Save to database
+  await db.collection('messages').insertOne(message);
+  
+  // Update or create chat in the chats collection
+  const chat = await db.collection('chats').findOne({ phone: from });
+  
+  if (chat) {
+    // Update existing chat
+    await db.collection('chats').updateOne(
+      { phone: from },
+      {
+        $set: {
+          lastMessage: message.message,
+          timestamp: message.timestamp,
+          unread: chat.unread + 1
+        }
+      }
+    );
+  } else {
+    // Create new chat
+    await db.collection('chats').insertOne({
+      id: uuidv4(),
+      userId: 'default',
+      phone: from,
+      name: `Customer ${from}`, // This would ideally come from customer data
+      lastMessage: message.message,
+      timestamp: message.timestamp,
+      unread: 1,
+      avatar: `https://ui-avatars.com/api/?name=Customer&background=random`
+    });
+  }
+  
+  return message;
+}
+
+// Function to save outgoing WhatsApp messages to database
+async function saveOutgoingMessage(db, to, messageText, whatsappResponse) {
+  const message = {
+    id: uuidv4(),
+    userId: 'default',
+    recipient: to,
+    phone: to, // Also store phone number directly for easier querying
+    message: messageText,
+    isCustomer: false,
+    timestamp: new Date(),
+    whatsappMessageId: whatsappResponse.messages?.[0]?.id,
+    status: 'sent'
+  };
+  
+  await db.collection('messages').insertOne(message);
+  
+  // Update or create chat in the chats collection
+  const chat = await db.collection('chats').findOne({ phone: to });
+  
+  if (chat) {
+    // Update existing chat
+    await db.collection('chats').updateOne(
+      { phone: to },
+      {
+        $set: {
+          lastMessage: messageText,
+          timestamp: new Date()
+        }
+      }
+    );
+  } else {
+    // Create new chat
+    await db.collection('chats').insertOne({
+      id: uuidv4(),
+      userId: 'default',
+      phone: to,
+      name: `Customer ${to}`,
+      lastMessage: messageText,
+      timestamp: new Date(),
+      unread: 0,
+      avatar: `https://ui-avatars.com/api/?name=Customer&background=random`
+    });
+  }
+  
+  return message;
+}
+
 async function sendOrderStatusUpdate(phoneNumberId, accessToken, to, order, newStatus) {
   // Format the status message
   let statusMessage = '';
@@ -321,6 +447,7 @@ async function handleRoute(request, { params }) {
 
   // Add debugging for route matching
   console.log(`Processing route: ${route}, method: ${method}, path array:`, path)
+  console.log(`Full params:`, params)
 
   try {
     const db = await connectToMongo()
@@ -532,250 +659,297 @@ async function handleRoute(request, { params }) {
 
     // Campaigns endpoints
     if (route === '/campaigns' && method === 'GET') {
-      const campaigns = await db.collection('campaigns')
-        .find({ userId: 'default' })
-        .sort({ createdAt: -1 })
-        .limit(100)
-        .toArray()
+      try {
+        const db = await connectToMongo();
+        const campaigns = await db.collection('campaigns')
+          .find({ userId: 'default' })
+          .sort({ createdAt: -1 })
+          .limit(100)
+          .toArray()
 
-      const cleanedCampaigns = campaigns.map(({ _id, ...rest }) => rest)
-      return handleCORS(NextResponse.json(cleanedCampaigns))
+        const cleanedCampaigns = campaigns.map(({ _id, ...rest }) => rest)
+        return handleCORS(NextResponse.json(cleanedCampaigns))
+      } catch (error) {
+        console.error('Failed to fetch campaigns:', error)
+        return handleCORS(NextResponse.json(
+          { error: 'Failed to fetch campaigns' },
+          { status: 500 }
+        ))
+      }
     }
 
     if (route === '/campaigns' && method === 'POST') {
-      const body = await request.json()
-      
-      if (!body.name || !body.message) {
+      try {
+        const db = await connectToMongo();
+        const body = await request.json()
+        
+        if (!body.name || !body.message) {
+          return handleCORS(NextResponse.json(
+            { error: "Campaign name and message are required" }, 
+            { status: 400 }
+          ))
+        }
+
+        const campaign = {
+          id: uuidv4(),
+          userId: 'default',
+          name: body.name,
+          message: body.message,
+          audience: body.audience || 'all_customers',
+          recipients: body.recipients || [],
+          status: body.status || 'draft',
+          createdAt: new Date()
+        }
+
+        await db.collection('campaigns').insertOne(campaign)
+        
+        const { _id, ...cleanedCampaign } = campaign
+        return handleCORS(NextResponse.json(cleanedCampaign))
+      } catch (error) {
+        console.error('Failed to create campaign:', error)
         return handleCORS(NextResponse.json(
-          { error: "Campaign name and message are required" }, 
-          { status: 400 }
+          { error: 'Failed to create campaign' },
+          { status: 500 }
         ))
       }
-
-      const campaign = {
-        id: uuidv4(),
-        userId: 'default',
-        name: body.name,
-        message: body.message,
-        audience: body.audience || 'all_customers',
-        recipients: body.recipients || [],
-        status: body.status || 'draft',
-        createdAt: new Date()
-      }
-
-      await db.collection('campaigns').insertOne(campaign)
-      
-      const { _id, ...cleanedCampaign } = campaign
-      return handleCORS(NextResponse.json(cleanedCampaign))
     }
 
     // Send campaign endpoint
     if (route.startsWith('/campaigns/') && route.endsWith('/send') && method === 'POST') {
-      const campaignId = route.split('/')[2]
-      
-      const campaign = await db.collection('campaigns').findOne({ 
-        id: campaignId, 
-        userId: 'default' 
-      })
-      
-      if (!campaign) {
-        return handleCORS(NextResponse.json(
-          { error: "Campaign not found" }, 
-          { status: 404 }
-        ))
-      }
-
-      const integrations = await db.collection('integrations').findOne({ userId: 'default' })
-      
-      if (!integrations?.whatsapp?.phoneNumberId || !integrations?.whatsapp?.accessToken) {
-        return handleCORS(NextResponse.json(
-          { error: "WhatsApp not configured" }, 
-          { status: 400 }
-        ))
-      }
-
       try {
-        const results = await sendCampaignToRecipients(campaign, integrations, db)
+        const db = await connectToMongo();
+        const campaignId = route.split('/')[2]
         
-        // Update campaign status
-        await db.collection('campaigns').updateOne(
-          { id: campaignId },
-          { 
-            $set: { 
-              status: 'sent',
-              sentAt: new Date(),
-              results: results
+        const campaign = await db.collection('campaigns').findOne({ 
+          id: campaignId, 
+          userId: 'default' 
+        })
+        
+        if (!campaign) {
+          return handleCORS(NextResponse.json(
+            { error: "Campaign not found" }, 
+            { status: 404 }
+          ))
+        }
+
+        const integrations = await db.collection('integrations').findOne({ userId: 'default' })
+        
+        if (!integrations?.whatsapp?.phoneNumberId || !integrations?.whatsapp?.accessToken) {
+          return handleCORS(NextResponse.json(
+            { error: "WhatsApp not configured" }, 
+            { status: 400 }
+          ))
+        }
+
+        try {
+          const results = await sendCampaignToRecipients(campaign, integrations, db)
+          
+          // Update campaign status
+          await db.collection('campaigns').updateOne(
+            { id: campaignId },
+            { 
+              $set: { 
+                status: 'sent',
+                sentAt: new Date(),
+                results: results
+              }
             }
-          }
-        )
+          )
 
-        return handleCORS(NextResponse.json({ 
-          success: true, 
-          results: results 
-        }))
+          return handleCORS(NextResponse.json({ 
+            success: true, 
+            results: results 
+          }))
 
+        } catch (error) {
+          // Update campaign status to failed
+          await db.collection('campaigns').updateOne(
+            { id: campaignId },
+            { 
+              $set: { 
+                status: 'failed',
+                error: error.message,
+                failedAt: new Date()
+              }
+            }
+          )
+
+          return handleCORS(NextResponse.json(
+            { error: `Failed to send campaign: ${error.message}` }, 
+            { status: 400 }
+          ))
+        }
       } catch (error) {
-        // Update campaign status to failed
-        await db.collection('campaigns').updateOne(
-          { id: campaignId },
-          { 
-            $set: { 
-              status: 'failed',
-              error: error.message,
-              failedAt: new Date()
-            }
-          }
-        )
-
+        console.error('Failed to send campaign:', error)
         return handleCORS(NextResponse.json(
-          { error: `Failed to send campaign: ${error.message}` }, 
-          { status: 400 }
+          { error: 'Failed to send campaign' },
+          { status: 500 }
         ))
       }
     }
 
     // Delete campaign endpoint
     if (route.startsWith('/campaigns/') && method === 'DELETE') {
-      const campaignId = route.split('/')[2]
-      
-      const result = await db.collection('campaigns').deleteOne({ 
-        id: campaignId, 
-        userId: 'default' 
-      })
-      
-      if (result.deletedCount === 0) {
+      try {
+        const db = await connectToMongo();
+        const campaignId = route.split('/')[2]
+        
+        const result = await db.collection('campaigns').deleteOne({ 
+          id: campaignId, 
+          userId: 'default' 
+        })
+        
+        if (result.deletedCount === 0) {
+          return handleCORS(NextResponse.json(
+            { error: "Campaign not found" }, 
+            { status: 404 }
+          ))
+        }
+
+        return handleCORS(NextResponse.json({ success: true }))
+      } catch (error) {
+        console.error('Failed to delete campaign:', error)
         return handleCORS(NextResponse.json(
-          { error: "Campaign not found" }, 
-          { status: 404 }
+          { error: 'Failed to delete campaign' },
+          { status: 500 }
         ))
       }
-
-      return handleCORS(NextResponse.json({ success: true }))
     }
 
     // Orders endpoint
     if (route === '/orders' && method === 'GET') {
-      // Try to fetch orders from Shopify if integration is configured
-      const integrations = await db.collection('integrations').findOne({ userId: 'default' })
-      
-      if (integrations?.shopify?.shopDomain && integrations?.shopify?.accessToken) {
-        try {
-          // Fetch orders directly from Shopify
-          const shopifyOrders = await fetchShopifyOrders(
-            integrations.shopify.shopDomain,
-            integrations.shopify.accessToken
-          )
-          
-          // Return Shopify orders
-          return handleCORS(NextResponse.json(shopifyOrders))
-        } catch (error) {
-          console.error('Failed to fetch Shopify orders:', error)
-          // Fall back to database orders if Shopify fetch fails
+      try {
+        const db = await connectToMongo();
+        // Try to fetch orders from Shopify if integration is configured
+        const integrations = await db.collection('integrations').findOne({ userId: 'default' })
+        
+        if (integrations?.shopify?.shopDomain && integrations?.shopify?.accessToken) {
+          try {
+            // Fetch orders directly from Shopify
+            const shopifyOrders = await fetchShopifyOrders(
+              integrations.shopify.shopDomain,
+              integrations.shopify.accessToken
+            )
+            
+            // Return Shopify orders
+            return handleCORS(NextResponse.json(shopifyOrders))
+          } catch (error) {
+            console.error('Failed to fetch Shopify orders:', error)
+            // Fall back to database orders if Shopify fetch fails
+          }
         }
-      }
-      
-      // Fall back to database orders
-      const orders = await db.collection('orders')
-        .find({ userId: 'default' })
-        .sort({ createdAt: -1 })
-        .limit(100)
-        .toArray()
+        
+        // Fall back to database orders
+        const orders = await db.collection('orders')
+          .find({ userId: 'default' })
+          .sort({ createdAt: -1 })
+          .limit(100)
+          .toArray()
 
-      const cleanedOrders = orders.map(({ _id, ...rest }) => rest)
-      return handleCORS(NextResponse.json(cleanedOrders))
+        const cleanedOrders = orders.map(({ _id, ...rest }) => rest)
+        return handleCORS(NextResponse.json(cleanedOrders))
+      } catch (error) {
+        console.error('Failed to fetch orders:', error)
+        return handleCORS(NextResponse.json(
+          { error: 'Failed to fetch orders' },
+          { status: 500 }
+        ))
+      }
     }
 
     // Send catalog endpoint
     if (route === '/send-catalog' && method === 'POST') {
-      const body = await request.json()
-      const { products: productIds, recipient } = body
-
-      if (!productIds || !Array.isArray(productIds) || productIds.length === 0) {
-        return handleCORS(NextResponse.json(
-          { error: "Products array is required" }, 
-          { status: 400 }
-        ))
-      }
-
-      if (!recipient) {
-        return handleCORS(NextResponse.json(
-          { error: "Recipient phone number is required" }, 
-          { status: 400 }
-        ))
-      }
-
-      // Get integrations
-      const integrations = await db.collection('integrations').findOne({ userId: 'default' })
-      
-      if (!integrations?.whatsapp?.phoneNumberId || !integrations?.whatsapp?.accessToken) {
-        return handleCORS(NextResponse.json(
-          { error: "WhatsApp not configured" }, 
-          { status: 400 }
-        ))
-      }
-
-      // Get products
-      const productsData = await db.collection('products').findOne({ userId: 'default' })
-      if (!productsData) {
-        return handleCORS(NextResponse.json(
-          { error: "No products found. Please sync products first." }, 
-          { status: 400 }
-        ))
-      }
-
-      const selectedProducts = productsData.products.filter(p => productIds.includes(p.id))
-      
-      if (selectedProducts.length === 0) {
-        return handleCORS(NextResponse.json(
-          { error: "Selected products not found" }, 
-          { status: 400 }
-        ))
-      }
-
       try {
-        // Validate and format phone number
-        const formattedRecipient = recipient.replace(/\D/g, '');
-        
-        // Log the recipient number for debugging
-        console.log(`Sending catalog to: ${recipient}, formatted: ${formattedRecipient}`);
-        
-        // Check if the number seems valid
-        if (formattedRecipient.length < 10) {
+        const db = await connectToMongo();
+        const body = await request.json()
+        const { products: productIds, recipient } = body
+
+        if (!productIds || !Array.isArray(productIds) || productIds.length === 0) {
           return handleCORS(NextResponse.json(
-            { error: "Invalid phone number format. Please include country code." }, 
+            { error: "Products array is required" }, 
             { status: 400 }
           ))
         }
 
-        // Check if we have a catalog ID configured
-        const hasCatalogId = integrations.whatsapp.catalogId;
+        if (!recipient) {
+          return handleCORS(NextResponse.json(
+            { error: "Recipient phone number is required" }, 
+            { status: 400 }
+          ))
+        }
+
+        // Get integrations
+        const integrations = await db.collection('integrations').findOne({ userId: 'default' })
         
-        // Use catalog link message as it's more reliable
-        if (hasCatalogId) {
-          // Send a catalog link message with selected product information
-          // Use businessAccountId for catalog links, not phoneNumberId
-          const businessAccountId = integrations.whatsapp.businessAccountId || integrations.whatsapp.phoneNumberId;
-          const catalogLink = `https://wa.me/c/${businessAccountId}`;
+        if (!integrations?.whatsapp?.phoneNumberId || !integrations?.whatsapp?.accessToken) {
+          return handleCORS(NextResponse.json(
+            { error: "WhatsApp not configured" }, 
+            { status: 400 }
+          ))
+        }
+
+        // Get products
+        const productsData = await db.collection('products').findOne({ userId: 'default' })
+        if (!productsData) {
+          return handleCORS(NextResponse.json(
+            { error: "No products found. Please sync products first." }, 
+            { status: 400 }
+          ))
+        }
+
+        const selectedProducts = productsData.products.filter(p => productIds.includes(p.id))
+        
+        if (selectedProducts.length === 0) {
+          return handleCORS(NextResponse.json(
+            { error: "Selected products not found" }, 
+            { status: 400 }
+          ))
+        }
+
+        try {
+          // Validate and format phone number
+          const formattedRecipient = recipient.replace(/\D/g, '');
           
-          // Create a message that includes information about selected products
-          let productInfo = "";
-          if (selectedProducts.length > 0) {
-            productInfo = "\nSelected products:\n";
-            selectedProducts.slice(0, 3).forEach((product, index) => {
-              productInfo += `${index + 1}. ${product.title} - $${product.price}\n`;
-            });
-            if (selectedProducts.length > 3) {
-              productInfo += `...and ${selectedProducts.length - 3} more items\n`;
-            }
-            productInfo += "\n";
+          // Log the recipient number for debugging
+          console.log(`Sending catalog to: ${recipient}, formatted: ${formattedRecipient}`);
+          
+          // Check if the number seems valid
+          if (formattedRecipient.length < 10) {
+            return handleCORS(NextResponse.json(
+              { error: "Invalid phone number format. Please include country code." }, 
+              { status: 400 }
+            ))
           }
+
+          // Check if we have a catalog ID configured
+          const hasCatalogId = integrations.whatsapp.catalogId;
           
-          const messageData = {
-            messaging_product: "whatsapp",
-            to: formattedRecipient,
-            type: "text",
-            text: {
-              body: `🛍️ *Our Product Catalog*
+          // Use catalog link message as it's more reliable
+          if (hasCatalogId) {
+            // Send a catalog link message with selected product information
+            // Use businessAccountId for catalog links, not phoneNumberId
+            const businessAccountId = integrations.whatsapp.businessAccountId || integrations.whatsapp.phoneNumberId;
+            const catalogLink = `https://wa.me/c/${businessAccountId}`;
+            
+            // Create a message that includes information about selected products
+            let productInfo = "";
+            if (selectedProducts.length > 0) {
+              productInfo = "\nSelected products:\n";
+              selectedProducts.slice(0, 3).forEach((product, index) => {
+                productInfo += `${index + 1}. ${product.title} - $${product.price}\n`;
+              });
+              if (selectedProducts.length > 3) {
+                productInfo += `...and ${selectedProducts.length - 3} more items\n`;
+              }
+              productInfo += "\n";
+            }
+            
+            const messageData = {
+              messaging_product: "whatsapp",
+              to: formattedRecipient,
+              type: "text",
+              text: {
+                body: `🛍️ *Our Product Catalog*
 
 Check out our latest products:
 ${catalogLink}
@@ -783,82 +957,7 @@ ${catalogLink}
 ${productInfo}Browse our full collection and find something special just for you!
 
 🛍️ *Shop Now* - Click the link above to browse our catalog`,
-              preview_url: true
-            }
-          };
-
-          console.log('Sending message with data:', JSON.stringify(messageData, null, 2));
-
-          const result = await sendWhatsAppMessage(
-            integrations.whatsapp.phoneNumberId,
-            integrations.whatsapp.accessToken,
-            formattedRecipient,
-            messageData
-          );
-
-          console.log('WhatsApp API response:', JSON.stringify(result, null, 2));
-
-          // Log the message
-          await db.collection('messages').insertOne({
-            id: uuidv4(),
-            userId: 'default',
-            recipient: formattedRecipient,
-            products: selectedProducts,
-            whatsappMessageId: result.messages?.[0]?.id,
-            status: 'sent',
-            sentAt: new Date()
-          });
-
-          return handleCORS(NextResponse.json({ 
-            success: true, 
-            messageId: result.messages?.[0]?.id 
-          }));
-        } else {
-          // Fallback to text message if no catalog ID is configured
-          if (selectedProducts.length === 1) {
-            // For single product, include image link and better formatting
-            const product = selectedProducts[0];
-            let catalogText = `🛍️ *${product.title}*\n\n`;
-            
-            if (product.image) {
-              catalogText += `${product.image}\n\n`;
-            }
-            
-            if (product.description) {
-              catalogText += `${product.description.substring(0, 200)}${product.description.length > 200 ? '...' : ''}\n\n`;
-            }
-            
-            catalogText += `💰 *Price: $${product.price}*\n\n`;
-            
-            // Create Stripe checkout session for individual product
-            if (integrations.stripe?.secretKey) {
-              const checkoutSession = await createStripeCheckoutSession([
-                {
-                  price_data: {
-                    currency: 'usd',
-                    product_data: {
-                      name: product.title,
-                      description: product.description
-                    },
-                    unit_amount: Math.round(parseFloat(product.price) * 100)
-                  },
-                  quantity: 1
-                }
-              ], { productId: product.id });
-              
-              catalogText += `🛒 *Buy now:* ${checkoutSession.url}\n\n`;
-            } else {
-              catalogText += `🛒 Contact us to purchase\n\n`;
-            }
-            
-            catalogText += "_💡 Tip: Connect your Facebook catalog for a better shopping experience with images!_";
-
-            const messageData = {
-              messaging_product: "whatsapp",
-              to: formattedRecipient,
-              type: "text",
-              text: {
-                body: catalogText
+                preview_url: true
               }
             };
 
@@ -889,15 +988,21 @@ ${productInfo}Browse our full collection and find something special just for you
               messageId: result.messages?.[0]?.id 
             }));
           } else {
-            // Fallback to text message for multiple products
-            let catalogText = "🛍️ *Product Catalog*\n\n";
-            
-            for (const product of selectedProducts) {
-              catalogText += `*${product.title}*\n`;
-              if (product.description) {
-                catalogText += `${product.description.substring(0, 100)}...\n`;
+            // Fallback to text message if no catalog ID is configured
+            if (selectedProducts.length === 1) {
+              // For single product, include image link and better formatting
+              const product = selectedProducts[0];
+              let catalogText = `🛍️ *${product.title}*\n\n`;
+              
+              if (product.image) {
+                catalogText += `${product.image}\n\n`;
               }
-              catalogText += `💰 Price: $${product.price}\n`;
+              
+              if (product.description) {
+                catalogText += `${product.description.substring(0, 200)}${product.description.length > 200 ? '...' : ''}\n\n`;
+              }
+              
+              catalogText += `💰 *Price: $${product.price}*\n\n`;
               
               // Create Stripe checkout session for individual product
               if (integrations.stripe?.secretKey) {
@@ -915,78 +1020,161 @@ ${productInfo}Browse our full collection and find something special just for you
                   }
                 ], { productId: product.id });
                 
-                catalogText += `🛒 Buy now: ${checkoutSession.url}\n\n`;
+                catalogText += `🛒 *Buy now:* ${checkoutSession.url}\n\n`;
               } else {
                 catalogText += `🛒 Contact us to purchase\n\n`;
               }
-            }
+              
+              catalogText += "_💡 Tip: Connect your Facebook catalog for a better shopping experience with images!_";
 
-            // Add a note about setting up catalog for better experience
-            catalogText += "_💡 Tip: Connect your Facebook catalog for a better shopping experience!_";
+              const messageData = {
+                messaging_product: "whatsapp",
+                to: formattedRecipient,
+                type: "text",
+                text: {
+                  body: catalogText
+                }
+              };
 
-            const messageData = {
-              messaging_product: "whatsapp",
-              to: formattedRecipient,
-              type: "text",
-              text: {
-                body: catalogText
+              console.log('Sending message with data:', JSON.stringify(messageData, null, 2));
+
+              const result = await sendWhatsAppMessage(
+                integrations.whatsapp.phoneNumberId,
+                integrations.whatsapp.accessToken,
+                formattedRecipient,
+                messageData
+              );
+
+              console.log('WhatsApp API response:', JSON.stringify(result, null, 2));
+
+              // Log the message
+              await db.collection('messages').insertOne({
+                id: uuidv4(),
+                userId: 'default',
+                recipient: formattedRecipient,
+                products: selectedProducts,
+                whatsappMessageId: result.messages?.[0]?.id,
+                status: 'sent',
+                sentAt: new Date()
+              });
+
+              return handleCORS(NextResponse.json({ 
+                success: true, 
+                messageId: result.messages?.[0]?.id 
+              }));
+            } else {
+              // Fallback to text message for multiple products
+              let catalogText = "🛍️ *Product Catalog*\n\n";
+              
+              for (const product of selectedProducts) {
+                catalogText += `*${product.title}*\n`;
+                if (product.description) {
+                  catalogText += `${product.description.substring(0, 100)}...\n`;
+                }
+                catalogText += `💰 Price: $${product.price}\n`;
+                
+                // Create Stripe checkout session for individual product
+                if (integrations.stripe?.secretKey) {
+                  const checkoutSession = await createStripeCheckoutSession([
+                    {
+                      price_data: {
+                        currency: 'usd',
+                        product_data: {
+                          name: product.title,
+                          description: product.description
+                        },
+                        unit_amount: Math.round(parseFloat(product.price) * 100)
+                      },
+                      quantity: 1
+                    }
+                  ], { productId: product.id });
+                  
+                  catalogText += `🛒 Buy now: ${checkoutSession.url}\n\n`;
+                } else {
+                  catalogText += `🛒 Contact us to purchase\n\n`;
+                }
               }
-            };
 
-            console.log('Sending message with data:', JSON.stringify(messageData, null, 2));
+              // Add a note about setting up catalog for better experience
+              catalogText += "_💡 Tip: Connect your Facebook catalog for a better shopping experience!_";
 
-            const result = await sendWhatsAppMessage(
-              integrations.whatsapp.phoneNumberId,
-              integrations.whatsapp.accessToken,
-              formattedRecipient,
-              messageData
-            );
+              const messageData = {
+                messaging_product: "whatsapp",
+                to: formattedRecipient,
+                type: "text",
+                text: {
+                  body: catalogText
+                }
+              };
 
-            console.log('WhatsApp API response:', JSON.stringify(result, null, 2));
+              console.log('Sending message with data:', JSON.stringify(messageData, null, 2));
 
-            // Log the message
-            await db.collection('messages').insertOne({
-              id: uuidv4(),
-              userId: 'default',
-              recipient: formattedRecipient,
-              products: selectedProducts,
-              whatsappMessageId: result.messages?.[0]?.id,
-              status: 'sent',
-              sentAt: new Date()
-            });
+              const result = await sendWhatsAppMessage(
+                integrations.whatsapp.phoneNumberId,
+                integrations.whatsapp.accessToken,
+                formattedRecipient,
+                messageData
+              );
 
-            return handleCORS(NextResponse.json({ 
-              success: true, 
-              messageId: result.messages?.[0]?.id 
-            }));
+              console.log('WhatsApp API response:', JSON.stringify(result, null, 2));
+
+              // Log the message
+              await db.collection('messages').insertOne({
+                id: uuidv4(),
+                userId: 'default',
+                recipient: formattedRecipient,
+                products: selectedProducts,
+                whatsappMessageId: result.messages?.[0]?.id,
+                status: 'sent',
+                sentAt: new Date()
+              });
+
+              return handleCORS(NextResponse.json({ 
+                success: true, 
+                messageId: result.messages?.[0]?.id 
+              }));
+            }
           }
+        } catch (error) {
+          console.error('Failed to send catalog message:', error);
+          return handleCORS(NextResponse.json(
+            { error: `Failed to send message: ${error.message}` }, 
+            { status: 400 }
+          ))
         }
       } catch (error) {
-        console.error('Failed to send catalog message:', error);
+        console.error('Failed to send catalog:', error);
         return handleCORS(NextResponse.json(
-          { error: `Failed to send message: ${error.message}` }, 
-          { status: 400 }
+          { error: 'Failed to send catalog' },
+          { status: 500 }
         ))
       }
     }
 
     // Webhook endpoint for WhatsApp
     if (route === '/webhook/whatsapp' && method === 'GET') {
-      const verifyToken = request.nextUrl.searchParams.get('hub.verify_token')
-      const challenge = request.nextUrl.searchParams.get('hub.challenge')
-      
-      const integrations = await db.collection('integrations').findOne({ userId: 'default' })
-      const expectedToken = integrations?.whatsapp?.webhookVerifyToken
-      
-      if (verifyToken === expectedToken) {
-        return handleCORS(new NextResponse(challenge))
-      } else {
-        return handleCORS(new NextResponse('Forbidden', { status: 403 }))
+      try {
+        const db = await connectToMongo();
+        const verifyToken = request.nextUrl.searchParams.get('hub.verify_token')
+        const challenge = request.nextUrl.searchParams.get('hub.challenge')
+        
+        const integrations = await db.collection('integrations').findOne({ userId: 'default' })
+        const expectedToken = integrations?.whatsapp?.webhookVerifyToken
+        
+        if (verifyToken === expectedToken) {
+          return handleCORS(new NextResponse(challenge))
+        } else {
+          return handleCORS(new NextResponse('Forbidden', { status: 403 }))
+        }
+      } catch (error) {
+        console.error('WhatsApp webhook verification error:', error)
+        return handleCORS(new NextResponse('Internal server error', { status: 500 }))
       }
     }
 
     if (route === '/webhook/whatsapp' && method === 'POST') {
       try {
+        const db = await connectToMongo();
         const body = await request.json()
         
         // Log webhook for debugging
@@ -996,6 +1184,51 @@ ${productInfo}Browse our full collection and find something special just for you
           payload: body,
           receivedAt: new Date()
         })
+        
+        console.log('WhatsApp webhook received:', JSON.stringify(body, null, 2));
+        
+        // Process incoming WhatsApp messages
+        if (body.entry && Array.isArray(body.entry)) {
+          for (const entry of body.entry) {
+            if (entry.changes && Array.isArray(entry.changes)) {
+              for (const change of entry.changes) {
+                console.log('Processing change:', JSON.stringify(change, null, 2));
+                
+                // Handle incoming messages
+                if (change.field === 'messages') {
+                  // Check for actual messages
+                  if (change.value?.messages && Array.isArray(change.value.messages)) {
+                    console.log('Processing incoming messages');
+                    for (const message of change.value.messages) {
+                      console.log('Saving incoming message:', JSON.stringify(message, null, 2));
+                      // Save incoming message to database
+                      await saveIncomingMessage(db, message)
+                    }
+                  }
+                  
+                  // Handle message statuses (delivery/read receipts)
+                  if (change.value?.statuses && Array.isArray(change.value.statuses)) {
+                    console.log('Processing message statuses');
+                    for (const status of change.value.statuses) {
+                      console.log('Message status update:', JSON.stringify(status, null, 2));
+                      // We could save status updates to a separate collection if needed
+                      // For now, we'll just log them
+                    }
+                  }
+                  
+                  // Handle contacts (new conversations)
+                  if (change.value?.contacts && Array.isArray(change.value.contacts)) {
+                    console.log('Processing contacts');
+                    for (const contact of change.value.contacts) {
+                      console.log('New contact:', JSON.stringify(contact, null, 2));
+                      // We could save contact information if needed
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
         
         return handleCORS(NextResponse.json({ success: true }))
       } catch (error) {
@@ -1010,6 +1243,7 @@ ${productInfo}Browse our full collection and find something special just for you
     // Fixed the route matching to properly handle webhook paths
     if (route === '/webhook/shopify' && method === 'POST') {
       try {
+        const db = await connectToMongo();
         const body = await request.json()
         const topic = request.headers.get('x-shopify-topic')
         
@@ -1450,6 +1684,228 @@ ${productInfo}Browse our full collection and find something special just for you
         method: "GET",
         note: "Shopify webhooks use POST method"
       }))
+    }
+
+    // New endpoint to send WhatsApp messages from the dashboard
+    if (route === '/send-whatsapp-message' && method === 'POST') {
+      try {
+        const db = await connectToMongo();
+        const body = await request.json()
+        const { to, message } = body
+
+        if (!to || !message) {
+          return handleCORS(NextResponse.json(
+            { error: "Recipient and message are required" },
+            { status: 400 }
+          ))
+        }
+
+        // Get WhatsApp integration details
+        const integrations = await db.collection('integrations').findOne({ userId: 'default' })
+        
+        if (!integrations?.whatsapp?.phoneNumberId || !integrations?.whatsapp?.accessToken) {
+          return handleCORS(NextResponse.json(
+            { error: "WhatsApp not configured" },
+            { status: 400 }
+          ))
+        }
+
+        // Prepare message data
+        const messageData = {
+          messaging_product: "whatsapp",
+          to: to.replace(/\D/g, ''), // Remove any non-digit characters
+          type: "text",
+          text: {
+            body: message
+          }
+        }
+
+        // Send message via WhatsApp API
+        const result = await sendWhatsAppMessage(
+          integrations.whatsapp.phoneNumberId,
+          integrations.whatsapp.accessToken,
+          to,
+          messageData
+        )
+
+        // Save message to database
+        const savedMessage = await saveOutgoingMessage(db, to, message, result)
+
+        // Return the saved message object
+        const messageResponse = {
+          id: savedMessage.id,
+          text: savedMessage.message,
+          isCustomer: savedMessage.isCustomer,
+          timestamp: savedMessage.timestamp,
+          phone: savedMessage.phone
+        }
+
+        return handleCORS(NextResponse.json({ 
+          success: true,
+          message: messageResponse,
+          messageId: result.messages?.[0]?.id 
+        }))
+
+      } catch (error) {
+        console.error('Failed to send WhatsApp message:', error)
+        return handleCORS(NextResponse.json(
+          { error: `Failed to send message: ${error.message}` },
+          { status: 500 }
+        ))
+      }
+    }
+
+    // New endpoint to get chats for the dashboard
+    if (route === '/chats' && method === 'GET') {
+      try {
+        const db = await connectToMongo();
+        const chats = await db.collection('chats')
+          .find({ userId: 'default' })
+          .sort({ timestamp: -1 })
+          .toArray()
+
+        const cleanedChats = chats.map(({ _id, ...rest }) => rest)
+        return handleCORS(NextResponse.json(cleanedChats))
+      } catch (error) {
+        console.error('Failed to fetch chats:', error)
+        return handleCORS(NextResponse.json(
+          { error: 'Failed to fetch chats' },
+          { status: 500 }
+        ))
+      }
+    }
+
+    // New endpoint to get messages for a specific chat
+    if (route.startsWith('/chats/') && route.endsWith('/messages') && method === 'GET') {
+      try {
+        const db = await connectToMongo();
+        const phone = route.split('/')[2]; // Extract phone number from route
+        
+        if (!phone) {
+          return handleCORS(NextResponse.json(
+            { error: "Phone number is required" },
+            { status: 400 }
+          ));
+        }
+
+        // Fetch all messages for this phone number (both incoming from customer and outgoing to customer)
+        const messages = await db.collection('messages')
+          .find({ 
+            userId: 'default',
+            $or: [
+              { recipient: phone },  // Messages sent to customer
+              { phone: phone }       // Messages received from customer
+            ]
+          })
+          .sort({ timestamp: 1 })
+          .toArray();
+
+        // Transform messages to ensure consistent structure for the frontend
+        const transformedMessages = messages.map(msg => {
+          // For incoming messages (from customer)
+          // If isCustomer is explicitly set to true, or if the phone field matches the chat phone (and it's not an outgoing message)
+          if (msg.isCustomer === true || (msg.phone && msg.phone === phone && msg.recipient !== phone)) {
+            return {
+              id: msg.id || msg._id?.toString() || uuidv4(),
+              text: msg.message || msg.text || '',
+              isCustomer: true,
+              timestamp: msg.timestamp || new Date(),
+              phone: msg.phone || phone
+            };
+          }
+          // For outgoing messages (to customer)
+          // If isCustomer is explicitly set to false, or if the recipient field matches the chat phone (and it's not an incoming message)
+          else if (msg.isCustomer === false || (msg.recipient && msg.recipient === phone && msg.phone !== phone)) {
+            return {
+              id: msg.id || msg._id?.toString() || uuidv4(),
+              text: msg.message || msg.text || '',
+              isCustomer: false,
+              timestamp: msg.timestamp || new Date(),
+              phone: msg.recipient || phone
+            };
+          }
+          // Fallback - assume outgoing message if we can't determine
+          else {
+            return {
+              id: msg.id || msg._id?.toString() || uuidv4(),
+              text: msg.message || msg.text || '',
+              isCustomer: false,
+              timestamp: msg.timestamp || new Date(),
+              phone: msg.recipient || msg.phone || phone
+            };
+          }
+        });
+
+        return handleCORS(NextResponse.json(transformedMessages));
+      } catch (error) {
+        console.error('Failed to fetch messages:', error);
+        return handleCORS(NextResponse.json(
+          { error: 'Failed to fetch messages' },
+          { status: 500 }
+        ));
+      }
+    }
+
+    // New endpoint to create a new chat
+    if (route === '/chats' && method === 'POST') {
+      try {
+        const db = await connectToMongo();
+        let body;
+        try {
+          body = await request.json();
+        } catch (parseError) {
+          console.error('Failed to parse JSON body:', parseError);
+          return handleCORS(NextResponse.json(
+            { error: "Invalid JSON in request body" },
+            { status: 400 }
+          ));
+        }
+        
+        const { phone, name } = body;
+
+        if (!phone) {
+          return handleCORS(NextResponse.json(
+            { error: "Phone number is required" },
+            { status: 400 }
+          ));
+        }
+
+        // Format the phone number
+        const formattedPhone = phone.replace(/\D/g, '');
+
+        // Check if chat already exists
+        const existingChat = await db.collection('chats').findOne({ 
+          userId: 'default',
+          phone: formattedPhone 
+        });
+
+        if (existingChat) {
+          return handleCORS(NextResponse.json(existingChat));
+        }
+
+        // Create new chat
+        const newChat = {
+          id: uuidv4(),
+          userId: 'default',
+          phone: formattedPhone,
+          name: name || `Customer ${formattedPhone}`,
+          lastMessage: 'Chat created',
+          timestamp: new Date(),
+          unread: 0,
+          avatar: `https://ui-avatars.com/api/?name=${name || 'Customer'}&background=random`
+        };
+
+        await db.collection('chats').insertOne(newChat);
+
+        const { _id, ...cleanedChat } = newChat;
+        return handleCORS(NextResponse.json(cleanedChat));
+      } catch (error) {
+        console.error('Failed to create chat:', error);
+        return handleCORS(NextResponse.json(
+          { error: 'Failed to create chat' },
+          { status: 500 }
+        ));
+      }
     }
 
     // Route not found
