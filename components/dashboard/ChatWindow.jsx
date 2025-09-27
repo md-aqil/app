@@ -160,7 +160,7 @@ export function ChatWindow({ chat, messages, onSendMessage }) {
                   : 'bg-blue-500 text-white rounded-tr-none'
               }`}
             >
-              <p className="text-sm">{message.text}</p>
+              <p className="text-sm">{message.message || message.text}</p>
               <p
                 className={`text-xs mt-1 ${
                   message.isCustomer ? 'text-gray-500' : 'text-blue-100'

@@ -44,7 +44,6 @@ export default function DashboardPage() {
   const [products, setProducts] = useState([])
   const [selectedProducts, setSelectedProducts] = useState([])
   const [campaigns, setCampaigns] = useState([])
-  const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(false)
   const [showCampaignDialog, setShowCampaignDialog] = useState(false)
   const [selectedCampaign, setSelectedCampaign] = useState(null)
@@ -53,7 +52,7 @@ export default function DashboardPage() {
   useEffect(() => {
     loadIntegrations()
     loadCampaigns()
-    loadOrders()
+    loadProducts() // Load products on mount
   }, [])
 
   const loadIntegrations = async () => {
@@ -69,22 +68,23 @@ export default function DashboardPage() {
   }
 
   const loadProducts = async () => {
-    if (!integrations.shopify.connected) return
-    
     try {
-      setLoading(true)
-      const response = await fetch('/api/products')
+      setLoading(true);
+      const response = await fetch('/api/products');
       if (response.ok) {
-        const data = await response.json()
-        setProducts(data)
+        const data = await response.json();
+        setProducts(data);
+      } else {
+        const error = await response.json();
+        toast.error(error.error || 'Failed to load products');
       }
     } catch (error) {
-      console.error('Failed to load products:', error)
-      toast.error('Failed to load products')
+      console.error('Failed to load products:', error);
+      toast.error('Failed to load products. Please check your Shopify connection.');
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
   const loadCampaigns = async () => {
     try {
@@ -95,24 +95,6 @@ export default function DashboardPage() {
       }
     } catch (error) {
       console.error('Failed to load campaigns:', error)
-    }
-  }
-
-  const loadOrders = async () => {
-    try {
-      setLoading(true)
-      const response = await fetch('/api/orders')
-      if (response.ok) {
-        const data = await response.json()
-        setOrders(data)
-      } else {
-        toast.error('Failed to load orders')
-      }
-    } catch (error) {
-      console.error('Failed to load orders:', error)
-      toast.error('Failed to load orders')
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -267,7 +249,15 @@ export default function DashboardPage() {
   }
 
   const IntegrationForm = ({ type, integration }) => {
-    const [formData, setFormData] = useState(integration.data || {})
+    // Initialize form data with empty object
+    const [formData, setFormData] = useState({})
+
+    // Update form data when integration changes
+    useEffect(() => {
+      if (integration.data) {
+        setFormData(integration.data);
+      }
+    }, [integration]);
 
     const handleSubmit = (e) => {
       e.preventDefault()
@@ -287,10 +277,9 @@ export default function DashboardPage() {
         case 'shopify':
           return [
             { key: 'shopDomain', label: 'Shop Domain', placeholder: 'your-shop.myshopify.com' },
-            { key: 'accessToken', label: 'Access Token', placeholder: 'Your Shopify Access Token', type: 'password' },
-            { key: 'apiKey', label: 'API Key', placeholder: 'Your Shopify API Key' },
-            { key: 'apiSecret', label: 'API Secret', placeholder: 'Your Shopify API Secret', type: 'password' }
+            { key: 'accessToken', label: 'Access Token (Private App Password)', placeholder: 'Your Shopify Access Token', type: 'password' }
           ]
+
         case 'stripe':
           return [
             { key: 'publishableKey', label: 'Publishable Key', placeholder: 'pk_test_...' },
@@ -313,7 +302,7 @@ export default function DashboardPage() {
               placeholder={field.placeholder}
               value={formData[field.key] || ''}
               onChange={(e) => setFormData(prev => ({ ...prev, [field.key]: e.target.value }))}
-              required
+              required={field.key !== 'catalogId' && field.key !== 'apiKey' && field.key !== 'publishableKey' && field.key !== 'webhookSecret'}
             />
           </div>
         ))}
@@ -359,13 +348,12 @@ export default function DashboardPage() {
               Create a marketing campaign to send to your customers
             </DialogDescription>
           </DialogHeader>
-          
           <div className="space-y-4">
             <div>
               <Label htmlFor="campaign-name">Campaign Name</Label>
               <Input
                 id="campaign-name"
-                placeholder="Summer Sale Campaign"
+                placeholder="Summer Sale"
                 value={campaignForm.name}
                 onChange={(e) => setCampaignForm(prev => ({ ...prev, name: e.target.value }))}
               />
@@ -375,15 +363,15 @@ export default function DashboardPage() {
               <Label htmlFor="campaign-message">Message</Label>
               <Textarea
                 id="campaign-message"
-                placeholder="🌟 Summer Sale Alert! Get 30% off all products. Shop now!"
+                placeholder="Check out our summer sale! Up to 50% off on selected items."
                 value={campaignForm.message}
                 onChange={(e) => setCampaignForm(prev => ({ ...prev, message: e.target.value }))}
-                rows={4}
+                rows={3}
               />
             </div>
 
             <div>
-              <Label htmlFor="audience">Audience</Label>
+              <Label>Audience</Label>
               <Select 
                 value={campaignForm.audience} 
                 onValueChange={(value) => setCampaignForm(prev => ({ ...prev, audience: value }))}
@@ -466,16 +454,12 @@ export default function DashboardPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">WhatsApp Commerce Hub Dashboard</h1>
           <p className="mt-1 text-sm text-gray-500">
-            Manage your integrations, products, campaigns, and orders all in one place
+            Manage your integrations, products, and campaigns all in one place
           </p>
         </div>
 
         <Tabs defaultValue="integrations" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-5">
-            <TabsTrigger value="integrations">
-              <Settings className="w-4 h-4 mr-2" />
-              Integrations
-            </TabsTrigger>
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="products">
               <Package className="w-4 h-4 mr-2" />
               Products
@@ -488,129 +472,85 @@ export default function DashboardPage() {
               <Megaphone className="w-4 h-4 mr-2" />
               Campaigns
             </TabsTrigger>
-            <TabsTrigger value="orders">
-              <ShoppingBag className="w-4 h-4 mr-2" />
-              Orders
-            </TabsTrigger>
           </TabsList>
-
-          {/* Integrations Tab */}
-          <TabsContent value="integrations" className="space-y-6">
-            <div className="grid gap-6 md:grid-cols-3">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center">
-                    <MessageCircle className="w-5 h-5 mr-2 text-green-600" />
-                    WhatsApp Business
-                  </CardTitle>
-                  <CardDescription>
-                    Connect your WhatsApp Business API to send messages and catalogs
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="mb-4">
-                    {getStatusBadge(integrations.whatsapp.connected)}
-                  </div>
-                  <IntegrationForm type="whatsapp" integration={integrations.whatsapp} />
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center">
-                    <Store className="w-5 h-5 mr-2 text-blue-600" />
-                    Shopify
-                  </CardTitle>
-                  <CardDescription>
-                    Connect your Shopify store to sync products and handle orders
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="mb-4">
-                    {getStatusBadge(integrations.shopify.connected)}
-                  </div>
-                  <IntegrationForm type="shopify" integration={integrations.shopify} />
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center">
-                    <CreditCard className="w-5 h-5 mr-2 text-purple-600" />
-                    Stripe
-                  </CardTitle>
-                  <CardDescription>
-                    Accept payments through Stripe checkout links
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="mb-4">
-                    {getStatusBadge(integrations.stripe.connected)}
-                  </div>
-                  <IntegrationForm type="stripe" integration={integrations.stripe} />
-                </CardContent>
-              </Card>
-            </div>
-          </TabsContent>
 
           {/* Products Tab */}
           <TabsContent value="products" className="space-y-6">
             <div className="flex items-center justify-between">
               <h2 className="text-xl font-semibold">Shopify Products</h2>
-              <Button onClick={loadProducts} disabled={loading || !integrations.shopify.connected}>
+              <Button onClick={loadProducts} disabled={loading}>
                 {loading ? 'Loading...' : 'Refresh Products'}
               </Button>
             </div>
 
-            {!integrations.shopify.connected ? (
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {products.map((product) => (
+                <Card key={product.id} className="cursor-pointer hover:shadow-md transition-shadow">
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-medium truncate">{product.title}</h3>
+                      <Badge variant="outline">${product.price}</Badge>
+                    </div>
+                    <p className="text-sm text-muted-foreground mb-3 line-clamp-2">
+                      {product.description || 'No description available'}
+                    </p>
+                    {product.image && (
+                      <img 
+                        src={product.image} 
+                        alt={product.title}
+                        className="w-full h-32 object-cover rounded mb-3"
+                      />
+                    )}
+                    <Button
+                      variant={selectedProducts.includes(product.id) ? "default" : "outline"}
+                      size="sm"
+                      className="w-full"
+                      onClick={() => {
+                        if (selectedProducts.includes(product.id)) {
+                          setSelectedProducts(prev => prev.filter(id => id !== product.id))
+                        } else {
+                          setSelectedProducts(prev => [...prev, product.id])
+                        }
+                      }}
+                    >
+                      {selectedProducts.includes(product.id) ? 'Selected' : 'Select'}
+                    </Button>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+            
+            {products.length === 0 && (
               <Card>
                 <CardContent className="pt-6">
                   <div className="text-center py-8">
-                    <Store className="w-12 h-12 mx-auto text-gray-400 mb-4" />
-                    <p className="text-lg mb-2">Connect Shopify First</p>
+                    <Package className="w-12 h-12 mx-auto text-gray-400 mb-4" />
+                    <p className="text-lg mb-2">No Products Found</p>
                     <p className="text-muted-foreground">
-                      Please configure your Shopify integration to load products
+                      {!integrations.shopify.connected 
+                        ? "Connect Shopify to load products or add products manually" 
+                        : "No products available in your store"}
                     </p>
-                  </div>
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                {products.map((product) => (
-                  <Card key={product.id} className="cursor-pointer hover:shadow-md transition-shadow">
-                    <CardContent className="p-4">
-                      <div className="flex items-center justify-between mb-2">
-                        <h3 className="font-medium truncate">{product.title}</h3>
-                        <Badge variant="outline">${product.price}</Badge>
-                      </div>
-                      <p className="text-sm text-muted-foreground mb-3 line-clamp-2">
-                        {product.description || 'No description available'}
-                      </p>
-                      {product.image && (
-                        <img 
-                          src={product.image} 
-                          alt={product.title}
-                          className="w-full h-32 object-cover rounded mb-3"
-                        />
-                      )}
-                      <Button
-                        variant={selectedProducts.includes(product.id) ? "default" : "outline"}
-                        size="sm"
-                        className="w-full"
+                    {!integrations.shopify.connected && (
+                      <Button 
+                        className="mt-4" 
                         onClick={() => {
-                          if (selectedProducts.includes(product.id)) {
-                            setSelectedProducts(prev => prev.filter(id => id !== product.id))
-                          } else {
-                            setSelectedProducts(prev => [...prev, product.id])
+                          // Find the integrations tab and switch to it
+                          const tabsList = document.querySelector('[role="tablist"]');
+                          if (tabsList) {
+                            const integrationsTab = tabsList.querySelector('[value="integrations"]');
+                            if (integrationsTab) {
+                              integrationsTab.click();
+                            }
                           }
                         }}
                       >
-                        {selectedProducts.includes(product.id) ? 'Selected' : 'Select'}
+                        Connect Shopify
                       </Button>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
             )}
           </TabsContent>
 
@@ -748,75 +688,6 @@ export default function DashboardPage() {
                           <Plus className="w-4 h-4 mr-2" />
                           Create Campaign
                         </Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-              </div>
-            )}
-          </TabsContent>
-
-          {/* Orders Tab */}
-          <TabsContent value="orders" className="space-y-6">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xl font-semibold">Recent Orders</h2>
-              <Button onClick={loadOrders} disabled={loading}>
-                {loading ? 'Loading...' : 'Refresh Orders'}
-              </Button>
-            </div>
-
-            {!integrations.shopify.connected ? (
-              <Card>
-                <CardContent className="pt-6">
-                  <div className="text-center py-8">
-                    <ShoppingBag className="w-12 h-12 mx-auto text-gray-400 mb-4" />
-                    <p className="text-lg mb-2">Connect Shopify First</p>
-                    <p className="text-muted-foreground">
-                      Please configure your Shopify integration to view orders
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="space-y-4">
-                {orders.map((order) => (
-                  <Card key={order.id}>
-                    <CardContent className="p-4">
-                      <div className="flex items-center justify-between mb-2">
-                        <h3 className="font-medium">Order #{order.orderNumber}</h3>
-                        <div className="flex items-center gap-2">
-                          <Badge variant="outline">${order.total}</Badge>
-                          {order.whatsappSent && (
-                            <Badge variant="default" className="bg-green-500">
-                              <MessageCircle className="w-3 h-3 mr-1" />
-                              WhatsApp Sent
-                            </Badge>
-                          )}
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-2 gap-4 text-sm text-muted-foreground">
-                        <div>
-                          <p><strong>Customer:</strong> {order.customerName}</p>
-                          <p><strong>Phone:</strong> {order.customerPhone}</p>
-                        </div>
-                        <div>
-                          <p><strong>Date:</strong> {new Date(order.createdAt).toLocaleDateString()}</p>
-                          <p><strong>Status:</strong> {order.status}</p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-                
-                {orders.length === 0 && (
-                  <Card>
-                    <CardContent className="pt-6">
-                      <div className="text-center py-8">
-                        <ShoppingBag className="w-12 h-12 mx-auto text-gray-400 mb-4" />
-                        <p className="text-lg mb-2">No Orders Yet</p>
-                        <p className="text-muted-foreground">
-                          Orders will appear here when customers make purchases
-                        </p>
                       </div>
                     </CardContent>
                   </Card>

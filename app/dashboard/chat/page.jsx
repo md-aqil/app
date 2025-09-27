@@ -129,18 +129,24 @@ export default function DashboardChatPage() {
         if (response.ok) {
           const data = await response.json()
           // Only update if we have new messages
-          if (data.length !== messages.length) {
-            setMessages(data)
-          } else {
+          setMessages(prevMessages => {
+            // Check if the messages have actually changed
+            if (data.length !== prevMessages.length) {
+              return data;
+            }
+            
             // Check if any messages are different (e.g., IDs changed)
-            const currentIds = new Set(messages.map(m => m.id))
-            const newIds = new Set(data.map(m => m.id))
+            const currentIds = new Set(prevMessages.map(m => m.id));
+            const newIds = new Set(data.map(m => m.id));
             
             // If the sets of IDs are different, update messages
             if (currentIds.size !== newIds.size || ![...currentIds].every(id => newIds.has(id))) {
-              setMessages(data)
+              return data;
             }
-          }
+            
+            // No changes, return previous messages
+            return prevMessages;
+          });
         }
       } catch (error) {
         console.error('Failed to poll messages:', error)
@@ -153,7 +159,7 @@ export default function DashboardChatPage() {
         clearInterval(pollingIntervalRef.current)
       }
     }
-  }, [activeChat, messages])
+  }, [activeChat])
 
   const handleSelectChat = (chat) => {
     setActiveChat(chat)
@@ -196,17 +202,10 @@ export default function DashboardChatPage() {
           : chat
       ))
       
-      // If the API returned the saved message, add it to the messages list
+      // Add the sent message to the messages list to provide immediate feedback
+      // The polling mechanism will update the list with the official version from the database
       if (result.message) {
         setMessages(prev => [...prev, result.message])
-      } else {
-        // Fallback: refresh all messages to show the newly sent message
-        // This will fetch the message with its proper ID from the database
-        const messagesResponse = await fetch(`/api/chats/${activeChat.phone}/messages`)
-        if (messagesResponse.ok) {
-          const data = await messagesResponse.json()
-          setMessages(data)
-        }
       }
       
     } catch (error) {

@@ -29,13 +29,13 @@ const nextConfig = {
         headers: [
           { key: "X-Frame-Options", value: "ALLOWALL" },
           { key: "Content-Security-Policy", value: "frame-ancestors *;" },
-          { key: "Access-Control-Allow-Origin", value: process.env.CORS_ORIGINS || "*" },
+          // Removed Access-Control-Allow-Origin header to avoid conflicts with API route CORS handling
           { key: "Access-Control-Allow-Methods", value: "GET, POST, PUT, DELETE, OPTIONS" },
-          { key: "Access-Control-Allow-Headers", value: "*" },
+          { key: "Access-Control-Allow-Headers", value: "Content-Type, Authorization, X-Requested-With, Accept, Origin" },
         ],
       },
     ];
   },
 };
 
-module.exports = nextConfig;
+export default nextConfig;
