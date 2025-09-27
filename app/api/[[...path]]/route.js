@@ -75,7 +75,11 @@ export async function OPTIONS(request) {
 
 // WhatsApp API functions
 async function sendWhatsAppMessage(phoneNumberId, accessToken, to, messageData) {
+<<<<<<< HEAD
   const url = `${config.whatsapp.baseUrl}/${config.whatsapp.apiVersion}/${phoneNumberId}/messages`
+=======
+  const url = `https://graph.facebook.com/v17.0/${phoneNumberId}/messages`
+>>>>>>> parent of c18b7fa (added full function for sending order notification)
   
   const response = await fetch(url, {
     method: 'POST',
@@ -87,6 +91,7 @@ async function sendWhatsAppMessage(phoneNumberId, accessToken, to, messageData) 
   })
 
   const data = await response.json()
+<<<<<<< HEAD
   
   if (!response.ok) {
     logger.error('WhatsApp API Error:', data);
@@ -105,11 +110,16 @@ async function sendWhatsAppMessage(phoneNumberId, accessToken, to, messageData) 
   if (!data.messages || !Array.isArray(data.messages) || data.messages.length === 0) {
     logger.error('Unexpected WhatsApp API response:', data);
     throw new Error('WhatsApp API returned unexpected response format')
+=======
+  if (!response.ok) {
+    throw new Error(data.error?.message || 'WhatsApp API error')
+>>>>>>> parent of c18b7fa (added full function for sending order notification)
   }
   
   return data
 }
 
+<<<<<<< HEAD
 // Function to save incoming WhatsApp messages to database
 async function saveIncomingMessage(db, messageData) {
   logger.debug('saveIncomingMessage called with:', messageData);
@@ -237,6 +247,8 @@ async function saveOutgoingMessage(db, to, messageText, whatsappResponse) {
   return message;
 }
 
+=======
+>>>>>>> parent of c18b7fa (added full function for sending order notification)
 // Shopify API functions
 async function fetchShopifyProducts(shopDomain, accessToken) {
   const url = `https://${shopDomain}/admin/api/${config.shopify.apiVersion}/products.json`
@@ -273,6 +285,7 @@ async function fetchShopifyProducts(shopDomain, accessToken) {
   }))
 }
 
+<<<<<<< HEAD
 async function fetchShopifyOrders(shopDomain, accessToken) {
   const url = `https://${shopDomain}/admin/api/${config.shopify.apiVersion}/orders.json?status=any`
   
@@ -348,6 +361,8 @@ async function fetchCompleteShopifyOrder(shopDomain, accessToken, orderId) {
   return data.order;
 }
 
+=======
+>>>>>>> parent of c18b7fa (added full function for sending order notification)
 async function createShopifyWebhook(shopDomain, accessToken, topic, webhookUrl) {
   const url = `https://${shopDomain}/admin/api/${config.shopify.apiVersion}/webhooks.json`
   
@@ -557,14 +572,20 @@ async function sendCampaignToRecipients(campaign, integrations, db) {
         }
       }
 
+<<<<<<< HEAD
       logger.debug(`Sending message to ${recipient}...`);
+=======
+>>>>>>> parent of c18b7fa (added full function for sending order notification)
       const result = await sendWhatsAppMessage(
         whatsapp.phoneNumberId,
         whatsapp.accessToken,
         recipient,
         messageData
       )
+<<<<<<< HEAD
       logger.debug(`Message sent successfully to ${recipient}:`, result);
+=======
+>>>>>>> parent of c18b7fa (added full function for sending order notification)
 
       results.push({
         recipient,
@@ -585,23 +606,14 @@ async function sendCampaignToRecipients(campaign, integrations, db) {
       })
 
     } catch (error) {
+<<<<<<< HEAD
       logger.error(`Failed to send message to ${recipient}:`, error.message);
+=======
+>>>>>>> parent of c18b7fa (added full function for sending order notification)
       results.push({
         recipient,
         success: false,
         error: error.message
-      })
-      
-      // Log the error
-      await db.collection('messages').insertOne({
-        id: uuidv4(),
-        userId: 'default',
-        campaignId: campaign.id,
-        recipient,
-        message: campaign.message,
-        status: 'failed',
-        error: error.message,
-        sentAt: new Date()
       })
     }
   }
@@ -612,6 +624,7 @@ async function sendCampaignToRecipients(campaign, integrations, db) {
 // Route handler function
 async function handleRoute(request, { params }) {
   const { path = [] } = params
+<<<<<<< HEAD
   const route = path.length > 0 ? `/${path.join('/')}` : '/'
   const method = request.method
 
@@ -622,6 +635,11 @@ async function handleRoute(request, { params }) {
 
   logger.debug(`Processing route: ${route}, method: ${method}, path array:`, path)
 
+=======
+  const route = `/${path.join('/')}`
+  const method = request.method
+
+>>>>>>> parent of c18b7fa (added full function for sending order notification)
   try {
     const db = await connectToMongo()
 
@@ -886,7 +904,7 @@ async function handleRoute(request, { params }) {
 
     // Setup webhooks endpoint
     if (route === '/setup-webhooks' && method === 'POST') {
-      const integrations = await db.collection('integrations').findOne({ userId: 'default' });
+      const integrations = await db.collection('integrations').findOne({ userId: 'default' })
       
       if (!integrations?.shopify?.shopDomain || !integrations?.shopify?.accessToken) {
         return handleCORS(NextResponse.json(
@@ -898,6 +916,7 @@ async function handleRoute(request, { params }) {
       try {
         const webhookUrl = `${config.app.baseUrl}/api/webhook/shopify`
         
+<<<<<<< HEAD
         // Create webhooks for order creation and status updates
         const webhooks = [
           { topic: 'orders/create', address: webhookUrl },
@@ -931,24 +950,42 @@ async function handleRoute(request, { params }) {
             // Continue with other webhooks even if one fails
           }
         }
+=======
+        // Create webhook for order creation
+        const webhook = await createShopifyWebhook(
+          integrations.shopify.shopDomain,
+          integrations.shopify.accessToken,
+          'orders/create',
+          webhookUrl
+        )
+>>>>>>> parent of c18b7fa (added full function for sending order notification)
 
         // Save webhook info
         await db.collection('webhooks').updateOne(
           { userId: 'default', type: 'shopify' },
           { 
             $set: { 
-              webhooks: createdWebhooks,
+              webhookId: webhook.id,
+              topic: 'orders/create',
+              address: webhookUrl,
               createdAt: new Date()
             }
           },
           { upsert: true }
         );
 
+<<<<<<< HEAD
         return handleCORS(NextResponse.json({ success: true }), request)
+=======
+        return handleCORS(NextResponse.json({ 
+          success: true, 
+          webhookId: webhook.id 
+        }))
+>>>>>>> parent of c18b7fa (added full function for sending order notification)
       } catch (error) {
         logger.error('Failed to setup webhooks:', error.message);
         return handleCORS(NextResponse.json(
-          { error: `Failed to setup webhooks: ${error.message}` }, 
+          { error: `Failed to setup webhook: ${error.message}` }, 
           { status: 400 }
         ))
       }
@@ -1595,6 +1632,7 @@ async function handleRoute(request, { params }) {
         ))
       }
 
+<<<<<<< HEAD
       const messageData = {
         messaging_product: "whatsapp",
         to: to.replace(/\D/g, ''),
@@ -1603,6 +1641,74 @@ async function handleRoute(request, { params }) {
           body: message
         }
       }
+=======
+      try {
+        const results = await sendCampaignToRecipients(campaign, integrations, db)
+        
+        // Update campaign status
+        await db.collection('campaigns').updateOne(
+          { id: campaignId },
+          { 
+            $set: { 
+              status: 'sent',
+              sentAt: new Date(),
+              results: results
+            }
+          }
+        )
+
+        return handleCORS(NextResponse.json({ 
+          success: true, 
+          results: results 
+        }))
+
+      } catch (error) {
+        // Update campaign status to failed
+        await db.collection('campaigns').updateOne(
+          { id: campaignId },
+          { 
+            $set: { 
+              status: 'failed',
+              error: error.message,
+              failedAt: new Date()
+            }
+          }
+        )
+
+        return handleCORS(NextResponse.json(
+          { error: `Failed to send campaign: ${error.message}` }, 
+          { status: 400 }
+        ))
+      }
+    }
+
+    // Delete campaign endpoint
+    if (route.startsWith('/campaigns/') && method === 'DELETE') {
+      const campaignId = route.split('/')[2]
+      
+      const result = await db.collection('campaigns').deleteOne({ 
+        id: campaignId, 
+        userId: 'default' 
+      })
+      
+      if (result.deletedCount === 0) {
+        return handleCORS(NextResponse.json(
+          { error: "Campaign not found" }, 
+          { status: 404 }
+        ))
+      }
+
+      return handleCORS(NextResponse.json({ success: true }))
+    }
+
+    // Orders endpoint
+    if (route === '/orders' && method === 'GET') {
+      const orders = await db.collection('orders')
+        .find({ userId: 'default' })
+        .sort({ createdAt: -1 })
+        .limit(100)
+        .toArray()
+>>>>>>> parent of c18b7fa (added full function for sending order notification)
 
       logger.debug(`Sending message to ${to}...`);
       try {
@@ -1697,6 +1803,7 @@ async function handleRoute(request, { params }) {
 
       logger.debug(`Sending catalog to ${recipient}...`);
       try {
+<<<<<<< HEAD
         const result = await sendWhatsAppMessage(
           whatsapp.phoneNumberId,
           whatsapp.accessToken,
@@ -1867,6 +1974,73 @@ Please reply with your full name to proceed with the order:`;
           statusCode = 403; // Forbidden
         }
         
+=======
+        // Create catalog message
+        let catalogText = "🛍️ *Product Catalog*\n\n"
+        
+        for (const product of selectedProducts) {
+          catalogText += `*${product.title}*\n`
+          if (product.description) {
+            catalogText += `${product.description.substring(0, 100)}...\n`
+          }
+          catalogText += `💰 Price: $${product.price}\n`
+          
+          // Create Stripe checkout session for individual product
+          if (integrations.stripe?.secretKey) {
+            const checkoutSession = await createStripeCheckoutSession([
+              {
+                price_data: {
+                  currency: 'usd',
+                  product_data: {
+                    name: product.title,
+                    description: product.description
+                  },
+                  unit_amount: Math.round(parseFloat(product.price) * 100)
+                },
+                quantity: 1
+              }
+            ], { productId: product.id })
+            
+            catalogText += `🛒 Buy now: ${checkoutSession.url}\n\n`
+          } else {
+            catalogText += `🛒 Contact us to purchase\n\n`
+          }
+        }
+
+        const messageData = {
+          messaging_product: "whatsapp",
+          to: recipient.replace(/\D/g, ''), // Remove non-digits
+          type: "text",
+          text: {
+            body: catalogText
+          }
+        }
+
+        const result = await sendWhatsAppMessage(
+          integrations.whatsapp.phoneNumberId,
+          integrations.whatsapp.accessToken,
+          recipient,
+          messageData
+        )
+
+        // Log the message
+        await db.collection('messages').insertOne({
+          id: uuidv4(),
+          userId: 'default',
+          recipient,
+          products: selectedProducts,
+          whatsappMessageId: result.messages?.[0]?.id,
+          status: 'sent',
+          sentAt: new Date()
+        })
+
+        return handleCORS(NextResponse.json({ 
+          success: true, 
+          messageId: result.messages?.[0]?.id 
+        }))
+
+      } catch (error) {
+>>>>>>> parent of c18b7fa (added full function for sending order notification)
         return handleCORS(NextResponse.json(
           { error: errorMessage }, 
           { status: statusCode }
@@ -1874,7 +2048,142 @@ Please reply with your full name to proceed with the order:`;
       }
     }
 
+<<<<<<< HEAD
     // Fallback for unknown routes
+=======
+    // Webhook endpoint for WhatsApp
+    if (route === '/webhook/whatsapp' && method === 'GET') {
+      const verifyToken = request.nextUrl.searchParams.get('hub.verify_token')
+      const challenge = request.nextUrl.searchParams.get('hub.challenge')
+      
+      const integrations = await db.collection('integrations').findOne({ userId: 'default' })
+      const expectedToken = integrations?.whatsapp?.webhookVerifyToken
+      
+      if (verifyToken === expectedToken) {
+        return handleCORS(new NextResponse(challenge))
+      } else {
+        return handleCORS(new NextResponse('Forbidden', { status: 403 }))
+      }
+    }
+
+    if (route === '/webhook/whatsapp' && method === 'POST') {
+      const body = await request.json()
+      
+      // Log webhook for debugging
+      await db.collection('webhook_logs').insertOne({
+        id: uuidv4(),
+        type: 'whatsapp',
+        payload: body,
+        receivedAt: new Date()
+      })
+      
+      return handleCORS(NextResponse.json({ success: true }))
+    }
+
+    // Webhook endpoint for Shopify
+    if (route === '/webhook/shopify' && method === 'POST') {
+      const body = await request.json()
+      
+      // Log webhook for debugging
+      await db.collection('webhook_logs').insertOne({
+        id: uuidv4(),
+        type: 'shopify',
+        payload: body,
+        receivedAt: new Date()
+      })
+
+      try {
+        // Process Shopify order webhook
+        if (body.id && body.customer) {
+          const order = {
+            id: uuidv4(),
+            userId: 'default',
+            shopifyOrderId: body.id.toString(),
+            orderNumber: body.order_number || body.name,
+            customerName: `${body.customer.first_name} ${body.customer.last_name}`.trim(),
+            customerEmail: body.customer.email,
+            customerPhone: body.customer.phone,
+            total: body.total_price,
+            currency: body.currency,
+            status: body.fulfillment_status || 'pending',
+            lineItems: body.line_items || [],
+            createdAt: new Date(body.created_at),
+            whatsappSent: false
+          }
+
+          // Save order to database
+          await db.collection('orders').insertOne(order)
+
+          // Send WhatsApp confirmation to customer if phone number exists
+          if (order.customerPhone) {
+            const integrations = await db.collection('integrations').findOne({ userId: 'default' })
+            
+            if (integrations?.whatsapp?.phoneNumberId && integrations?.whatsapp?.accessToken) {
+              try {
+                const confirmationMessage = `🎉 *Order Confirmation*\n\n` +
+                  `Thank you for your order, ${order.customerName}!\n\n` +
+                  `📋 Order #${order.orderNumber}\n` +
+                  `💰 Total: ${order.currency} ${order.total}\n` +
+                  `📦 Status: Processing\n\n` +
+                  `We'll send you updates as your order progresses. Thank you for choosing us! 🙏`
+
+                const messageData = {
+                  messaging_product: "whatsapp",
+                  to: order.customerPhone.replace(/\D/g, ''),
+                  type: "text",
+                  text: {
+                    body: confirmationMessage
+                  }
+                }
+
+                const result = await sendWhatsAppMessage(
+                  integrations.whatsapp.phoneNumberId,
+                  integrations.whatsapp.accessToken,
+                  order.customerPhone,
+                  messageData
+                )
+
+                // Update order to mark WhatsApp as sent
+                await db.collection('orders').updateOne(
+                  { id: order.id },
+                  { 
+                    $set: { 
+                      whatsappSent: true,
+                      whatsappMessageId: result.messages?.[0]?.id,
+                      whatsappSentAt: new Date()
+                    }
+                  }
+                )
+
+                // Log the message
+                await db.collection('messages').insertOne({
+                  id: uuidv4(),
+                  userId: 'default',
+                  orderId: order.id,
+                  recipient: order.customerPhone,
+                  message: confirmationMessage,
+                  whatsappMessageId: result.messages?.[0]?.id,
+                  status: 'sent',
+                  sentAt: new Date()
+                })
+
+              } catch (whatsappError) {
+                console.error('Failed to send WhatsApp confirmation:', whatsappError)
+                // Don't fail the webhook if WhatsApp fails
+              }
+            }
+          }
+        }
+
+        return handleCORS(NextResponse.json({ success: true }))
+      } catch (error) {
+        console.error('Shopify webhook processing error:', error)
+        return handleCORS(NextResponse.json({ success: true })) // Always return success to Shopify
+      }
+    }
+
+    // Route not found
+>>>>>>> parent of c18b7fa (added full function for sending order notification)
     return handleCORS(NextResponse.json(
       { error: "Route not found" }, 
       { status: 404 }
