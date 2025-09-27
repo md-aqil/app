@@ -199,17 +199,33 @@ async function processIncomingMessage(message, value, db, integrations) {
       
       // Check if this is part of the WhatsApp checkout flow
       if (session.state && session.state.startsWith('checkout_')) {
-        await handleCheckoutFlow(
-          from, 
-          text, 
-          session, 
-          sessionManager, 
-          whatsappSender, 
-          shopifyClient, 
-          paymentGateway,
-          integrations,
-          db
-        );
+        // Additional check to ensure we're still in a valid checkout state
+        // If the customer is asking about orders, shipments, etc., exit checkout flow
+        const isOrderRelatedMessage = text.toLowerCase().includes('order') || 
+          text.toLowerCase().includes('status') || 
+          text.toLowerCase().includes('shipment') || 
+          text.toLowerCase().includes('delivery') ||
+          text.toLowerCase().includes('tracking');
+          
+        if (isOrderRelatedMessage) {
+          // Exit checkout flow and reset to idle state
+          await sessionManager.setSessionState(from, CONVERSATION_STATES.IDLE);
+          // Send a generic response
+          await whatsappSender.sendTextMessage(from, 
+            "Hello! 👋 I'm your shopping assistant. Say 'checkout' or 'buy' to start shopping, or ask me anything about our products!");
+        } else {
+          await handleCheckoutFlow(
+            from, 
+            text, 
+            session, 
+            sessionManager, 
+            whatsappSender, 
+            shopifyClient, 
+            paymentGateway,
+            integrations,
+            db
+          );
+        }
       }
       // If we're in idle state, check for checkout intent
       else if (session.state === CONVERSATION_STATES.IDLE) {
@@ -219,24 +235,49 @@ async function processIncomingMessage(message, value, db, integrations) {
           status: 'pending_whatsapp_confirmation'
         });
         
+        // Only start the checkout flow automatically if:
+        // 1. There is a pending checkout
+        // 2. The pending checkout was created recently (within the last 5 minutes)
+        // 3. The customer's message doesn't seem to be about an existing order
         if (pendingCheckout) {
-          // Start checkout flow immediately
-          await startCheckoutFlow(from, session, sessionManager, whatsappSender, db);
-          // After starting the checkout flow, we need to handle the new state
-          // Get the updated session
-          const updatedSession = await sessionManager.getSession(from);
-          if (updatedSession && updatedSession.state && updatedSession.state.startsWith('checkout_')) {
-            await handleCheckoutFlow(
-              from, 
-              text, 
-              updatedSession, 
-              sessionManager, 
-              whatsappSender, 
-              shopifyClient, 
-              paymentGateway,
-              integrations,
-              db
-            );
+          const isRecentCheckout = pendingCheckout.createdAt && 
+            (new Date() - new Date(pendingCheckout.createdAt)) < 5 * 60 * 1000; // 5 minutes
+          
+          const isOrderRelatedMessage = text.toLowerCase().includes('order') || 
+            text.toLowerCase().includes('status') || 
+            text.toLowerCase().includes('shipment') || 
+            text.toLowerCase().includes('delivery') ||
+            text.toLowerCase().includes('tracking');
+          
+          // Only auto-start checkout for recent checkouts that don't seem order-related
+          if (isRecentCheckout && !isOrderRelatedMessage) {
+            // Start checkout flow immediately
+            await startCheckoutFlow(from, session, sessionManager, whatsappSender, db);
+            // After starting the checkout flow, we need to handle the new state
+            // Get the updated session
+            const updatedSession = await sessionManager.getSession(from);
+            if (updatedSession && updatedSession.state && updatedSession.state.startsWith('checkout_')) {
+              await handleCheckoutFlow(
+                from, 
+                text, 
+                updatedSession, 
+                sessionManager, 
+                whatsappSender, 
+                shopifyClient, 
+                paymentGateway,
+                integrations,
+                db
+              );
+            }
+          } else {
+            // For older checkouts or order-related messages, treat as regular conversation
+            if (detectCheckoutIntent(text)) {
+              await handleCheckoutIntent(from, session, sessionManager, whatsappSender);
+            } else {
+              // Send a generic response
+              await whatsappSender.sendTextMessage(from, 
+                "Hello! 👋 I'm your shopping assistant. Say 'checkout' or 'buy' to start shopping, or ask me anything about our products!");
+            }
           }
         } else if (detectCheckoutIntent(text)) {
           await handleCheckoutIntent(from, session, sessionManager, whatsappSender);

@@ -1022,7 +1022,7 @@ async function handleRoute(request, { params }) {
         return handleCORS(NextResponse.json(
           { error: "WhatsApp not configured" }, 
           { status: 400 }
-        ))
+        ), request)
       }
 
       // Use the modular WhatsApp webhook handler
@@ -1036,34 +1036,78 @@ async function handleRoute(request, { params }) {
         
         // Create a response collector
         let responseCollector = null;
+        let responseSent = false;
         
-        // Create a mock response object
+        // Create a mock response object that properly handles both .json() and .send()
         const mockRes = {
           status: (code) => {
+            const responseMethods = {
+              json: (data) => {
+                if (!responseSent) {
+                  responseCollector = handleCORS(NextResponse.json(data, { status: code }), request);
+                  responseSent = true;
+                }
+                return responseCollector;
+              },
+              send: (data) => {
+                if (!responseSent) {
+                  // For string data like the challenge, create a plain text response
+                  if (typeof data === 'string') {
+                    responseCollector = handleCORS(new NextResponse(data, { status: code }), request);
+                  } else {
+                    // For object data, create a JSON response
+                    responseCollector = handleCORS(NextResponse.json(data, { status: code }), request);
+                  }
+                  responseSent = true;
+                }
+                return responseCollector;
+              }
+            };
+            
+            // Special handling for verification challenge
             if (code === 200 && mockReq.query?.['hub.challenge']) {
-              // For verification, return the challenge directly
-              responseCollector = new NextResponse(mockReq.query['hub.challenge'], { status: code });
+              const challenge = mockReq.query['hub.challenge'];
+              responseCollector = new NextResponse(challenge, { status: code });
+              responseSent = true;
               return {
                 send: (data) => {
-                  responseCollector = new NextResponse(data, { status: code });
+                  if (!responseSent) {
+                    responseCollector = new NextResponse(data, { status: code });
+                    responseSent = true;
+                  }
                   return responseCollector;
                 }
               };
             }
-            return {
-              json: (data) => {
-                // Create and store the response
-                responseCollector = handleCORS(NextResponse.json(data, { status: code }), request);
-                return responseCollector;
+            
+            return responseMethods;
+          },
+          json: (data) => {
+            if (!responseSent) {
+              responseCollector = handleCORS(NextResponse.json(data, { status: 200 }), request);
+              responseSent = true;
+            }
+            return responseCollector;
+          },
+          send: (data) => {
+            if (!responseSent) {
+              // For string data, create a plain text response
+              if (typeof data === 'string') {
+                responseCollector = handleCORS(new NextResponse(data, { status: 200 }), request);
+              } else {
+                // For object data, create a JSON response
+                responseCollector = handleCORS(NextResponse.json(data, { status: 200 }), request);
               }
-            };
+              responseSent = true;
+            }
+            return responseCollector;
           }
         };
         
         // Call the handler
-        await handleWhatsAppWebhook.handleWhatsAppWebhook(mockReq, mockRes, db, integrations);
+        await handleWhatsAppWebhook(mockReq, mockRes, db, integrations);
         
-        // Return the collected response
+        // Return the collected response or a default success response
         return responseCollector || handleCORS(NextResponse.json({ success: true }, { status: 200 }), request);
       } catch (error) {
         logger.error('Error in WhatsApp webhook handler:', error);
